@@ -1,0 +1,21 @@
+{
+  "name": "niaji-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Personal WhatsApp AI assistant (Baileys). Auto-replies in English/Swahili/Sheng, auto-views statuses, takes voice-note commands.",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.5",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

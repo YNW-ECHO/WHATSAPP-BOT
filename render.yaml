@@ -1,0 +1,57 @@
+# Render blueprint — used when you click "New +" → "Blueprint" in Render.
+# You can also skip this and create a plain "Web Service" from your GitHub repo
+# using the same Build / Start commands and env vars below.
+services:
+  - type: web
+    name: niaji-bot
+    runtime: node
+    plan: free
+    buildCommand: apt-get update && apt-get install -y ffmpeg && npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: WHISPER_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CX
+        sync: false
+      - key: OWNER_JID
+        sync: false
+      - key: KEEPALIVE_URL
+        sync: false
+      - key: KEEPALIVE_TOKEN
+        sync: false
+      - key: ALLOW_GROUPS
+        value: "false"
+      - key: AUTO_REPLY_DEFAULT
+        value: "true"
+      - key: MIN_REPLY_SPACING_MS
+        value: "8000"
+      - key: VOICE_AUTO_REPLY
+        value: "false"
+      - key: TTS_PROVIDER
+        value: openai
+      - key: TTS_VOICE
+        value: alloy
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: STYLE_SAMPLE_COUNT
+        value: "30"
+      - key: DASH_PASSWORD
+        sync: false
+      - key: DASH_USER
+        value: admin
+      - key: DASH_HOST
+        value: "0.0.0.0"
