@@ -27,6 +27,8 @@ services:
         sync: false
       - key: OWNER_JID
         sync: false
+      - key: OWNER_PHONE
+        sync: false
       - key: KEEPALIVE_URL
         sync: false
       - key: KEEPALIVE_TOKEN

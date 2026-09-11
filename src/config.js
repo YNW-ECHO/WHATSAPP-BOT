@@ -5,17 +5,25 @@ function bool(v, dflt = false) {
   return ['1', 'true', 'yes', 'on', 'y'].includes(String(v).toLowerCase());
 }
 
+function phoneFromOwnerJid(jid) {
+  if (!jid) return '';
+  const clean = String(jid).split(':')[0];
+  const digits = clean.replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.replace(/^0+/, '') || digits;
+}
+
 const config = {
   name: process.env.BOT_NAME || 'Niaji',
   aiProvider: (process.env.AI_PROVIDER || 'openai').toLowerCase(),
-openaiKey: process.env.OPENAI_API_KEY || '',
-    anthropicKey: process.env.ANTHROPIC_API_KEY || '',
-    geminiKey: process.env.GEMINI_API_KEY || '',
-    groqKey: process.env.GROQ_API_KEY || '',
-    groqModel: process.env.GROQ_MODEL || 'qwen/qwen3.8-27b',
-    openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+  openaiKey: process.env.OPENAI_API_KEY || '',
+  anthropicKey: process.env.ANTHROPIC_API_KEY || '',
+  geminiKey: process.env.GEMINI_API_KEY || '',
+  groqKey: process.env.GROQ_API_KEY || '',
+  groqModel: process.env.GROQ_MODEL || 'qwen/qwen3.8-27b',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
   whisperKey: process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY || '',
   whisperModel: process.env.WHISPER_MODEL || 'whisper-1',
   googleKey: process.env.GOOGLE_API_KEY || '',
@@ -35,6 +43,7 @@ openaiKey: process.env.OPENAI_API_KEY || '',
   dashUser: process.env.DASH_USER || 'admin',
   dashboardHost: process.env.DASH_HOST || '0.0.0.0',
   ownerJid: process.env.OWNER_JID || '',
+  ownerPhone: process.env.OWNER_PHONE || phoneFromOwnerJid(process.env.OWNER_JID || ''),
   keepAliveUrl: process.env.KEEPALIVE_URL || '',
   keepAliveToken: process.env.KEEPALIVE_TOKEN || '',
   port: Number(process.env.PORT || 3000),

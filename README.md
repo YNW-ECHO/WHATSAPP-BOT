@@ -48,7 +48,11 @@ npm start
 ```
 
 A **QR code** prints in the terminal → scan it from WhatsApp → Settings → Linked Devices →
-Link a device. Done — the bot is live on your number)Skip
+Link a device. Done — the bot is live on your number.
+
+**Prefer no QR?** Set `OWNER_PHONE` to your number (no `+`, e.g. `254712345678`). The bot then
+prints a tiny **8-character pairing code** instead — in WhatsApp choose **Link with phone number**
+and type it in. Much easier in Render logs than scanning a huge QR. Leave it empty to use the QR.
 You can use **`!auto on/off`** in any chat, **`!mute`/`!unmute`**, and the web search/AI are on.
 
 ---
