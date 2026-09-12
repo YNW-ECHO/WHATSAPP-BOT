@@ -8,8 +8,14 @@ const { startBot } = require('./src/bot');
 process.on('unhandledRejection', (err) => logger.error('unhandledRejection:', err));
 process.on('uncaughtException', (err) => logger.error('uncaughtException:', err));
 
-if (!config.openaiKey && !config.anthropicKey) {
-  logger.warn('⚠️  No AI key set (GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY). Auto-replies stay off until you add one.');
+const hasAiKey =
+  (config.aiProvider === 'groq' && config.groqKey) ||
+  (config.aiProvider === 'gemini' && config.geminiKey) ||
+  (config.aiProvider === 'anthropic' && config.anthropicKey) ||
+  (config.aiProvider !== 'groq' && config.aiProvider !== 'gemini' && config.aiProvider !== 'anthropic' && config.openaiKey);
+
+if (!hasAiKey) {
+  logger.warn(`⚠️  No AI key set for provider "${config.aiProvider}". Auto-replies stay off until you add one.`);
 }
 
 startServer();
