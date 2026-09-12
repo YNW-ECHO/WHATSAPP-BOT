@@ -1,5 +1,12 @@
 const { config } = require('./config');
 
+function hasKey() {
+  if (config.aiProvider === 'anthropic' && config.anthropicKey) return true;
+  if (config.aiProvider === 'groq' && config.groqKey) return true;
+  if (config.aiProvider === 'gemini' && config.geminiKey) return true;
+  return !!config.openaiKey;
+}
+
 async function chat(messages, { maxTokens = 250 } = {}) {
   const provider = config.aiProvider;
 
@@ -86,6 +93,15 @@ async function chat(messages, { maxTokens = 250 } = {}) {
   throw new Error('No AI API key configured. Set AI_PROVIDER + GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY.');
 }
 
+function parseLenient(s) {
+  try { return JSON.parse(s); } catch (e) {}
+  const rmTrailing = s.replace(/,\s*([\]}])/g, '$1');
+  try { return JSON.parse(rmTrailing); } catch (e) {}
+  const unquoted = rmTrailing.replace(/([{\[,])\s*([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":').replace(/'/g, '"');
+  try { return JSON.parse(unquoted); } catch (e) {}
+  return null;
+}
+
 async function chatJSON(system, text) {
   const out = await chat(
     [
@@ -97,8 +113,10 @@ async function chatJSON(system, text) {
   const cleaned = out.replace(/```json/gi, '').replace(/```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON returned: ' + out.slice(0, 200));
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const slice = start !== -1 && end !== -1 ? cleaned.slice(start, end + 1) : cleaned;
+  const parsed = parseLenient(slice);
+  if (parsed === null) throw new Error('Bad JSON from AI: ' + out.slice(0, 200));
+  return parsed;
 }
 
 async function transcribeAudio(buffer, mime = 'audio/ogg') {
@@ -116,4 +134,4 @@ async function transcribeAudio(buffer, mime = 'audio/ogg') {
   return (data.text || '').trim();
 }
 
-module.exports = { chat, chatJSON, transcribeAudio };
+module.exports = { chat, chatJSON, hasKey, transcribeAudio };

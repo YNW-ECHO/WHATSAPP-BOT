@@ -4,7 +4,7 @@ const { searchWeb } = require('./search');
 const store = require('./store');
 const { withTimeout } = require('./human');
 
-const SYSTEM_TEMPLATE = (name, style) =>
+const SYSTEM_TEMPLATE = (name, style, factsBlock, memoryBlock) =>
   `You are ${name}, a friendly Kenyan person chatting on WhatsApp. A friend just messaged you.
 
 Rules:
@@ -18,7 +18,17 @@ Rules:
 - Messages longer than a few short lines are NOT allowed.
 ${
   style
-    ? `\nSTRONG STYLE GUIDE — these are REAL messages ${name} sent; imitate their exact voice, tone, sentence length, punctuation, slang, and language-mixing:\n${style}`
+    ? `\nSTRONG STYLE GUIDE — these are REAL messages ${name} sent; imitate their exact voice, tone, sentence length, punctuation, slang, and language-mixing:\n${style}\nUse emojis the same way and as often as the samples do when it feels natural; otherwise keep them light.`
+    : ''
+}
+${
+  factsBlock
+    ? `\nKNOWN FACTS about people/things ${name} mentioned before — use them only when relevant to answer correctly, never contradict them:\n${factsBlock}`
+    : ''
+}
+${
+  memoryBlock
+    ? `\nEARLIER CONVERSATION MEMORY (context from before the latest messages — use it to stay consistent):\n${memoryBlock}`
     : ''
 }
 
@@ -73,6 +83,8 @@ async function createReply(sock, jid, incomingText) {
 
   const history = store.getHistory(jid, 8);
   const styleSamples = store.getStyleSamples(config.styleSampleCount || 30);
+  const factsBlock = store.factsForPrompt(8);
+  const memoryBlock = store.getSummary(jid)?.summary || '';
   let webNote = '';
   if (looksInformational(incomingText)) {
     const results = await withTimeout(searchWeb(incomingText), 5000, []);
@@ -93,7 +105,7 @@ async function createReply(sock, jid, incomingText) {
     {
       role: 'system',
       content:
-        SYSTEM_TEMPLATE(config.name, styleBlock) +
+        SYSTEM_TEMPLATE(config.name, styleBlock, factsBlock, memoryBlock) +
         (webNote ? '\n\n' + webNote : ''),
     },
     ...normalizeMessages(history, incomingText),

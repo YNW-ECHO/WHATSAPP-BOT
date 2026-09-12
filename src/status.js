@@ -27,7 +27,7 @@ async function handleStatus(sock, msg) {
       store.addCommandLog(sender, 'status_view', 'status auto-viewed');
 
       // Optionally "like"/react to the status like a real person would.
-      if (statusReactsEnabled() && msg.key.remoteJid === 'status@broadcast' && Math.random() < 0.55) {
+      if (statusReactsEnabled() && msg.key.remoteJid === 'status@broadcast') {
         const emoji = REACTIONS[rand(0, REACTIONS.length - 1)];
         await sock.sendMessage(msg.key.remoteJid, {
           react: { text: emoji, key: msg.key },

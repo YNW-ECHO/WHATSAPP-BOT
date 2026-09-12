@@ -87,7 +87,11 @@ async function handleVoiceText(sock, ownerJid, text) {
   if (!target || !msgText) {
     return sendBack(sock, ownerJid, `Say who to text and the message, e.g. "text John, I'll be late".`);
   }
+  return resolveAndSend(sock, ownerJid, target, msgText);
+}
 
+// Direct send with a resolved target (name or phone number) — no AI needed.
+async function resolveAndSend(sock, ownerJid, target, msgText) {
   // Direct phone number?
   const digits = String(target).replace(/[\s+\-()]/g, '');
   if (/^\d{9,12}$/.test(digits)) {
@@ -137,7 +141,7 @@ async function handleSelfText(sock, msg) {
       const target = (words[1] || '').replace(/^@/, '');
       const message = words.slice(2).join(' ');
       if (!target || !message) return sendBack(sock, jid, 'Usage: !send <name or number> <message>');
-      return handleVoiceText(sock, jid, `text ${target} ${message}`);
+      return resolveAndSend(sock, jid, target, message);
     }
     case 'now': {
       const s = session.getState();
@@ -192,4 +196,4 @@ async function handleChatCommand(sock, msg) {
   }
 }
 
-module.exports = { handleSelfVoice, handleSelfText, handleVoiceText, handleChatCommand };
+module.exports = { handleSelfVoice, handleSelfText, handleVoiceText, handleChatCommand, resolveAndSend };

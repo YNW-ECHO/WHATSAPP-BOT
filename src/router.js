@@ -11,6 +11,8 @@ const commands = require('./commands');
 const replyEngine = require('./reply');
 const tts = require('./tts');
 const ai = require('./ai');
+const facts = require('./facts');
+const summarizer = require('./summarizer');
 
 function unwrap(msg) {
   const m = msg.message || {};
@@ -86,6 +88,7 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
   store.addHistory(jid, 'user', transcript);
   store.addHistory(jid, 'assistant', reply);
   store.addCommandLog(jid, 'reply', reply.slice(0, 120));
+  summarizer.maybeUpdate(jid);
 
   if (wantVoice) {
     try {
@@ -134,7 +137,10 @@ async function route(sock, msg) {
     }
     const t = getText(msg).trim();
     // §3.5 style learning source: the owner's own real texts
-    if (t && !t.startsWith('!')) store.addStyleSample(jid, t);
+    if (t && !t.startsWith('!')) {
+      store.addStyleSample(jid, t);
+      facts.extractAndStore(t, jid); // fire-and-forget knowledge learning
+    }
     if (t.startsWith('!')) {
       if (isOwner) return commands.handleSelfText(sock, msg);
       return;
@@ -174,6 +180,10 @@ async function route(sock, msg) {
   }
   session.markActive(jid);
 
+  // Attach imported person memory the first time this contact starts chatting,
+  // so the bot already knows them (never forgets them after that).
+  summarizer.attachMemoryFor(jid, store.getContactName(jid));
+
   // Human-like: mark as read after a short delay (don't block the reply path)
   const rd = readDelay(text.length + 5);
   setTimeout(() => readQuietly(sock, key), rd);
@@ -196,6 +206,7 @@ async function route(sock, msg) {
     store.addHistory(jid, 'user', text);
     store.addHistory(jid, 'assistant', reply);
     store.addCommandLog(jid, 'reply', reply.slice(0, 120));
+    summarizer.maybeUpdate(jid);
   } catch (e) {
     logger.error('auto-reply failed:', jid, e.stack || e.message);
   } finally {
