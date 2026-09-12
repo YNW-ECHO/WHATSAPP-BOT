@@ -154,7 +154,7 @@ async function startBot() {
         return;
       }
       logger.warn('Connection closed, reconnecting in a few seconds…', { code });
-      scheduleRestart();
+      scheduleRestart(code);
     }
   });
 
@@ -187,11 +187,15 @@ async function startBot() {
   logger.info('Bot started. Use the dashboard → Re-link to get a pairing code if not connected.');
 }
 
-async function scheduleRestart() {
+async function scheduleRestart(code) {
   if (restarting) return;
   restarting = true;
-  logger.info('Restarting in 3s…');
-  await sleep(3000);
+  // Timeouts (408) usually mean no WhatsApp connectivity: back off so we
+  // don't hammer the server every 3 s when offline. Reconnects happen
+  // manually via the dashboard Re-link button anyway.
+  const delay = code === 408 ? 15000 : 3000;
+  logger.info(`Restarting in ${delay / 1000}s…`);
+  await sleep(delay);
   try {
     await startBot();
   } catch (e) {
