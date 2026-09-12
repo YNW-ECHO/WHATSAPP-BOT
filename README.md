@@ -76,7 +76,7 @@ right build/start/health config. Set the envs in the service.
 
 ### Keeping the free instance awake
 The bot runs a tiny HTTP server with **`/health`** and **`/`** endpoints. Set your service URL as
-`KEEPALIVE_URL` in the env — the bot self-pings every few minutes. Also add a Render **health
+`KEEPALIVE_URL` in the env — the bot self-pings every 30s. Also add a Render **health
 check path** `/health` so Render keeps it healthy and your free service doesn't sleep. (Free tier
 still sleeps after ~15 min of inactivity on Render; the keep-alive self-ping keeps it from doing
 so — and if it does sleep, the bot auto-reconnects on Render's next ping. For 24/7 uptime on the
@@ -96,11 +96,12 @@ free tier this is the standard friend-approved trick.)
 | Variable | Purpose |
 |---|---|
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | AI replies (and Whisper voice) |
-| `AI_PROVIDER` | `openai` (default) or `anthropic` |
+| `AI_PROVIDER` | `openai`, `anthropic`, `gemini`, or `groq` (groq/gemini have free-tier keys) |
 | `GOOGLE_API_KEY` + `GOOGLE_CX` | live web search (Google CSE, free 100/day) |
 | `BOT_NAME` | name shown in replies |
 | `ALLOW_GROUPS` | `true` to also auto-reply in groups (off by default) |
 | `AUTO_REPLY_DEFAULT` | `true` = new chats auto-reply by default |
+| `STATUS_REACTS` | `true` = "like" statuses with an emoji after viewing (life toggle in dashboard) |
 | `OWNER_JID` | your `2547XXXXXXXX@s.whatsapp.net` (auto-detects if empty) |
 | `KEEPALIVE_URL` | your Render service URL (self-ping so free tier stays awake) |
 | `PORT` | set by Render automatically |
@@ -134,15 +135,24 @@ the person who wrote you.
 
 **Style learning** — the bot collects your own outgoing messages and injects up to
 `STYLE_SAMPLE_COUNT` of them into the AI prompt as a few-shot style guide, so replies sound
-like *you* (not a generic assistant). Manage samples in the dashboard → Settings.
+like *you* (not a generic assistant). You can also paste your own messages or **upload a full
+WhatsApp chat export** to teach it instantly — manage samples in the dashboard → **Training**.
 
 **Voice-note round-trip** — send the bot a voice note and (with `VOICE_AUTO_REPLY=true` and
 ffmpeg installed) it transcribes, replies in text, and sends a voice-note reply it generated
-with TTS. Falls back to text-only automatically if TTS/ffmpeg is unavailable.
+with TTS. Falls back to text-only automatically if TTS/ffmpeg is unavailable. Toggleable live
+from the dashboard (Settings → *Reply to voice notes with voice*).
 
-**Web dashboard** at `http://<host>:<port>/` — overview, conversations, contacts, voice log,
-command log, settings (global pause, system prompt override, API key status, style samples)
-and chat history. Protect it with `DASH_PASSWORD`.
+**Status reactions** — besides auto-viewing statuses, the bot can "like" them like a real person
+(response emoji, ~55% of the time). Toggle with the `STATUS_REACTS` env var or live from the
+dashboard (Settings → *React/like statuses after viewing*).
+
+**Web dashboard** at `http://<host>:<port>/` — Overview (live stats + pairing code), Chats
+(auto/mute toggles per chat + history), Devices & Logins (which device/IP/location accessed the
+bot), Training (style samples + chat-export importer), and Settings (global pause, status
+reactions, voice replies, system prompt override, API key status). Plus a **Re-link WhatsApp**
+button that resets the session and prints a fresh pairing code whenever you need to re-link.
+Protect it with `DASH_PASSWORD`.
 
 ---
 
@@ -155,11 +165,12 @@ WHATSAPP BOT/
 │  ├─ config.js        env → config
 │  ├─ store.js         SQLite (better-sqlite3): chats, contacts, history, voice/command logs, style samples, settings
 │  ├─ session.js       Baileys socket + hot/cooldown + pending commands
-│  ├─ ai.js            LLM (OpenAI/Anthropic) + Whisper transcription
+│  ├─ ai.js            LLM (OpenAI/Anthropic/Gemini/Groq) + Whisper transcription
 │  ├─ search.js        Google CSE + DuckDuckGo fallback
 │  ├─ commands.js      owner commands (voice + text)
 │  ├─ contacts.js      contact sync + fuzzy resolver
-│  ├─ status.js        status viewer (auto mark read)
+│  ├─ status.js        status viewer (auto mark read + optional reactions)
+│  ├─ trainer.js       chat-export parser + training-sample importer
 │  ├─ router.js        message router (text + voice-note pipes)
 │  ├─ human.js         human delays (read/typing/sleep)
 │  ├─ tts.js           text-to-speech (OpenAI / ElevenLabs → ogg via ffmpeg)

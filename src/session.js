@@ -3,7 +3,18 @@ const { typingDelay, sleep } = require('./human');
 let sock = null;
 const hot = new Map();
 const pendingCommands = new Map();
-const state = { connection: 'connecting', connected: false, contacts: 0, startedAt: Date.now() };
+const state = {
+  connection: 'connecting',
+  connected: false,
+  contacts: 0,
+  number: '',
+  device: '',
+  pairingCode: '',
+  qr: '',
+  relinkPending: false,
+  lastLoginAt: 0,
+  startedAt: Date.now(),
+};
 
 function setSocket(s) {
   sock = s;
@@ -19,6 +30,19 @@ function setState(partial) {
 
 function getState() {
   return { ...state };
+}
+
+function setPairingCode(code) {
+  state.pairingCode = code || '';
+  state.relinkPending = false;
+}
+
+function setQr(qr) {
+  state.qr = qr || '';
+}
+
+function setDeviceInfo(partial) {
+  Object.assign(state, partial);
 }
 
 function markActive(jid) {
@@ -64,6 +88,9 @@ module.exports = {
   getSocket,
   setState,
   getState,
+  setPairingCode,
+  setQr,
+  setDeviceInfo,
   markActive,
   isHot,
   releaseHot,

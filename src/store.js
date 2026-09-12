@@ -6,6 +6,7 @@ let db = null;
 const rawCache = new Map();
 
 function init() {
+  if (db) return db;
   const dir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
   fs.mkdirSync(dir, { recursive: true });
   db = new Database(path.join(dir, 'bot.db'));
@@ -55,7 +56,17 @@ function init() {
     CREATE TABLE IF NOT EXISTS command_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       jid TEXT NOT NULL,
-      kind TEXT NOT NULL,            -- 'voice_command' | 'send' | 'status_view' | 'reply' | 'chat_command'
+      kind TEXT NOT NULL,            -- 'voice_command' | 'send' | 'status_view' | 'reply' | 'chat_command' | 'reaction'
+      detail TEXT NOT NULL DEFAULT '',
+      ts INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS device_logins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL DEFAULT 'whatsapp',  -- 'whatsapp' (linked device) | 'dashboard' (admin login)
+      number TEXT NOT NULL DEFAULT '',
+      device TEXT NOT NULL DEFAULT '',
+      ip TEXT NOT NULL DEFAULT '',
+      location TEXT NOT NULL DEFAULT '',
       detail TEXT NOT NULL DEFAULT '',
       ts INTEGER NOT NULL
     );
@@ -109,6 +120,7 @@ function getContacts() {
 }
 
 function countContacts() {
+  if (!db) return 0;
   return db.prepare('SELECT COUNT(*) AS c FROM contacts').get().c;
 }
 
@@ -250,6 +262,14 @@ function getStyleSamples(limit = 30) {
     .all(limit);
 }
 
+function deleteStyleSample(id) {
+  return db.prepare('DELETE FROM style_samples WHERE id = ?').run(id);
+}
+
+function clearStyleSamples() {
+  return db.prepare('DELETE FROM style_samples').run();
+}
+
 function getSetting(key, defaultVal = '') {
   const row = db.prepare('SELECT value FROM global_settings WHERE key = ?').get(key);
   return row ? row.value : defaultVal;
@@ -263,17 +283,46 @@ function isGlobalPaused() {
   return getSetting('global_pause', '0') === '1';
 }
 
+function addDeviceLogin(d) {
+  db.prepare(
+    'INSERT INTO device_logins (kind, number, device, ip, location, detail, ts) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    d.kind || 'whatsapp',
+    String(d.number || '').slice(0, 80),
+    String(d.device || '').slice(0, 120),
+    String(d.ip || '').slice(0, 60),
+    String(d.location || '').slice(0, 160),
+    String(d.detail || '').slice(0, 300),
+    d.ts || Date.now()
+  );
+}
+
+function getDeviceLogins(limit = 100) {
+  return db
+    .prepare('SELECT * FROM device_logins ORDER BY id DESC LIMIT ?')
+    .all(limit);
+}
+
+function clearDeviceLogins() {
+  return db.prepare('DELETE FROM device_logins').run();
+}
+
 module.exports = {
   addCommandLog,
+  addDeviceLogin,
   addHistory,
   addStyleSample,
   addVoiceLog,
+  clearDeviceLogins,
+  clearStyleSamples,
   conversationRows,
   countCommandLogsToday,
   countContacts,
+  deleteStyleSample,
   getChat,
   getCommandLogs,
   getContacts,
+  getDeviceLogins,
   getHistory,
   getRaw,
   getSetting,

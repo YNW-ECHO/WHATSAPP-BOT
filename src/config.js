@@ -31,6 +31,7 @@ const config = {
   allowGroups: bool(process.env.ALLOW_GROUPS, false),
   autoReplyDefault: bool(process.env.AUTO_REPLY_DEFAULT, true),
   voiceAutoReply: bool(process.env.VOICE_AUTO_REPLY, false),
+  statusReacts: bool(process.env.STATUS_REACTS, true),
   ttsProvider: (process.env.TTS_PROVIDER || 'openai').toLowerCase(),
   ttsVoice: process.env.TTS_VOICE || 'alloy',
   elevenLabsKey: process.env.ELEVENLABS_API_KEY || '',

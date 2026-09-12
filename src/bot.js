@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const {
@@ -17,13 +18,33 @@ const contacts = require('./contacts');
 const router = require('./router');
 const { sleep } = require('./human');
 
-// Compact QR: capture qrcode-terminal output, strip the quiet-zone margins,
-// and render each cell at half width (1 char instead of 2) so it fits easily
-// in the Render log viewer.
+const DEVICE_NAMES = {
+  0: 'Desktop',
+  1: 'App/Launcher',
+  2: 'iPad',
+  3: 'iPhone',
+  4: 'Web',
+  5: 'Other',
+  7: 'Android',
+};
+
+function deviceName(n) {
+  if (n == null) return 'Unknown';
+  return DEVICE_NAMES[n] || `Device ${n}`;
+}
+
+function findAuthDir() {
+  return process.env.AUTH_DIR || path.join(process.cwd(), 'auth-info');
+}
+
+let currentSock = null;
+let restarting = false;
+let pairingRequested = false;
+
+// Compact QR for the Render log viewer.
 function printQR(qr) {
   let out = '';
   const original = process.stdout.write;
-  const patch = process.stdout.write;
   process.stdout.write = (chunk, enc, cb) => {
     out += chunk;
     if (typeof enc === 'function') enc();
@@ -34,50 +55,59 @@ function printQR(qr) {
     qrcode.generate(qr, { small: true });
   } catch (e) {}
   process.stdout.write = original;
-  void patch;
 
-  const lines = out.split('\n');
-  const stripped = lines
-    .map((l) => l.trimEnd())
-    .filter((l) => l.trim().length > 0)
-    .map((l) => {
-      // 2-char cells → 1 char (use the first "pixel" char of each pair)
-      let halved = '';
-      for (let i = 0; i < l.length; i += 2) halved += l[i];
-      return halved;
-    });
-  // crop empty margin rows (top/bottom quiet zone)
-  const first = stripped.findIndex((l) => /[█▀▄ ]/.test(l));
-  const last = stripped.map((l, i) => (l.trim() ? i : -1)).filter((i) => i >= 0).pop();
-  const body = stripped.slice(first, last + 1);
-  // trim horizontal quiet-zone columns
-  const min = Math.min(...body.map((l) => l.indexOf('█') >= 0 ? l.indexOf('█') : Infinity));
-  const compact = body.map((l) => l.slice(min));
+  const lines = out.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+  const body = lines.map((l) => {
+    let halved = '';
+    for (let i = 0; i < l.length; i += 2) halved += l[i];
+    return halved;
+  });
   logger.info(`——— NEW QR — scan it in WhatsApp → Settings → Linked Devices ———`);
-  for (const l of compact) process.stdout.write(l + '\n');
-  void original;
+  for (const l of body.slice(0, 24)) process.stdout.write(l + '\n');
 }
-
-let restarting = false;
-let pairingRequested = false;
 
 async function tryPairingCode(sock) {
   if (pairingRequested) return;
   try {
     const code = await sock.requestPairingCode(config.ownerPhone);
     pairingRequested = true;
-    logger.info('PAIRING CODE — in WhatsApp: Settings → Linked devices → Link a device → "Link with phone number"');
+    session.setPairingCode(code);
+    logger.info('PAIRING CODE — in WhatsApp: Settings → Linked devices → "Link with phone number"');
     logger.info(`Enter this code: ${code}`);
   } catch (e) {
     logger.warn('pairing code failed, showing QR instead:', e.message);
+    session.setPairingCode('');
     pairingRequested = false;
+  }
+}
+
+function recordConnection() {
+  const user = currentSock?.user;
+  const jid = user?.id ? jidNormalizedUser(user.id) : '';
+  const number = jid.split('@')[0] || jid;
+  const device = deviceName(user?.device) + ' · macOS Chrome';
+  session.setDeviceInfo({
+    number,
+    device,
+    connected: true,
+    connection: 'open',
+    lastLoginAt: Date.now(),
+  });
+  if (number) {
+    store.addDeviceLogin({
+      kind: 'whatsapp',
+      number,
+      device,
+      ip: '',
+      location: '',
+      detail: `Linked guest device (${device})`,
+    });
   }
 }
 
 async function startBot() {
   store.init();
-
-  const authDir = process.env.AUTH_DIR || path.join(process.cwd(), 'auth-info');
+  const authDir = findAuthDir();
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const baileysLogger = pino({ level: process.env.DEBUG ? 'debug' : 'silent' });
 
@@ -90,7 +120,7 @@ async function startBot() {
     syncFullHistory: false,
     getMessage: async (key) => store.getRaw(key.id) || { conversation: '' },
   });
-
+  currentSock = sock;
   session.setSocket(sock);
   session.setState({ connection: 'connecting', connected: false });
 
@@ -100,8 +130,7 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      // If the owner's number is known, prefer a tiny pairing CODE over a huge QR.
-      // WhatsApp: Settings → Linked devices → Link a device → Link with phone number.
+      session.setQr(qr);
       if (config.ownerPhone) {
         await tryPairingCode(sock);
         return;
@@ -110,23 +139,18 @@ async function startBot() {
     }
 
     if (connection === 'open') {
-      let selfJid = '';
-      try {
-        selfJid = jidNormalizedUser(sock.user?.id || '');
-      } catch (e) {}
-      if (!config.ownerJid && selfJid) config.ownerJid = selfJid;
-      session.setState({ connection: 'open', connected: true });
-      logger.info(`Connected as ${config.ownerJid || selfJid}`);
-      contacts.sync(sock).then(() => {
-        session.setState({ contacts: store.countContacts() });
-      }).catch(() => {});
+      pairingRequested = false;
+      recordConnection();
+      logger.info(`Connected as ${session.getState().number}`);
+      contacts.sync(sock).then((n) => session.setState({ contacts: n })).catch(() => {});
     }
 
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       session.setState({ connection: 'closed', connected: false });
       if (code === DisconnectReason.loggedOut) {
-        logger.error('Logged out of WhatsApp. Delete the auth-info folder and restart to rescan the QR.');
+        logger.error('Logged out of WhatsApp. Use the dashboard "Re-link" button to reconnect.');
+        session.setState({ pairingCode: '', qr: '' });
         return;
       }
       logger.warn('Connection closed, reconnecting in a few seconds…', { code });
@@ -134,7 +158,7 @@ async function startBot() {
     }
   });
 
-  // Keep self-id fed into config even before "open" (Baileys sets it early sometimes)
+  // Feed self-id into config early when Baileys sets it.
   if (!config.ownerJid && sock.user?.id) {
     try {
       config.ownerJid = jidNormalizedUser(sock.user.id);
@@ -151,16 +175,16 @@ async function startBot() {
     }
   });
 
-  sock.ev.on('contacts.upsert', (contacts = []) => {
-    for (const c of contacts || []) {
+  sock.ev.on('contacts.upsert', (contactsList = []) => {
+    for (const c of contactsList || []) {
       const jid = c.id || c.lid || '';
       const name = c.name || c.notify || c.verifiedName || '';
       if (jid && name) store.saveContact(jid, name);
     }
-    contacts.sync(sock).catch(() => {});
+    contacts.sync(sock).then((n) => session.setState({ contacts: n })).catch(() => {});
   });
 
-  logger.info('Bot started. Waiting for QR…');
+  logger.info('Bot started. Use the dashboard → Re-link to get a pairing code if not connected.');
 }
 
 async function scheduleRestart() {
@@ -176,4 +200,55 @@ async function scheduleRestart() {
   restarting = false;
 }
 
-module.exports = { startBot };
+// Dashboard "Re-link" button: back up the session, log out, wipe it, and
+// start fresh so a new pairing code/QR is produced for WhatsApp.
+async function relink() {
+  session.setState({ relinkPending: true, pairingCode: '', qr: '', connected: false, connection: 'relinking' });
+  const authDir = findAuthDir();
+  const backup = authDir + '.bak';
+  try {
+    fs.rmSync(backup, { recursive: true, force: true });
+    fs.cpSync(authDir, backup, { recursive: true, force: true });
+  } catch (e) {
+    logger.warn('relink backup failed:', e.message);
+  }
+
+  const sock = currentSock;
+  currentSock = null;
+  if (sock) {
+    try {
+      await sock.logout();
+    } catch (e) {
+      logger.warn('logout failed:', e.message);
+    }
+  }
+
+  pairingRequested = false;
+  try {
+    fs.rmSync(authDir, { recursive: true, force: true });
+  } catch (e) {
+    logger.warn('relink wipe failed:', e.message);
+  }
+
+  try {
+    await startBot();
+  } catch (e) {
+    logger.error('relink start failed:', e.message);
+    session.setState({ relinkPending: false });
+    return { ok: false, error: e.message };
+  }
+
+  // Poll briefly so the pairing code is ready when the response lands.
+  for (let i = 0; i < 20; i++) {
+    const code = session.getState().pairingCode;
+    if (code) {
+      logger.info(`relink: code ready → ${code}`);
+      return { ok: true, code, number: config.ownerPhone || '' };
+    }
+    await sleep(500);
+  }
+  session.setState({ relinkPending: false });
+  return { ok: true, code: session.getState().pairingCode, number: config.ownerPhone || '' };
+}
+
+module.exports = { startBot, relink, deviceName };

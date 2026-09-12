@@ -76,7 +76,8 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
   store.addVoiceLog(jid, 'in', transcript);
 
   const mode = (store.getChat(jid) || {}).reply_mode || 'text';
-  const wantVoice = config.voiceAutoReply && mode !== 'text';
+  const voiceEnabled = store.getSetting('voice_auto', config.voiceAutoReply ? '1' : '0') === '1';
+  const wantVoice = voiceEnabled && mode !== 'text';
 
   const reply = await replyEngine.createReply(sock, jid, transcript);
   if (!reply) return;
