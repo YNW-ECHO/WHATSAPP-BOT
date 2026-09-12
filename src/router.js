@@ -128,9 +128,16 @@ async function route(sock, msg) {
   // ---- Global pause switch (dashboard setting) ----
   if (store.isGlobalPaused()) return;
 
-  // ---- Messages from the owner (you) ----
-  if (fromMe) {
-    const isOwner = !config.ownerJid || normJid(jid) === normJid(config.ownerJid);
+  // The owner's own chat jid. config.ownerJid may be empty in .env, so we
+  // also derive it from the linked session number once connected.
+  const ownJid = normJid(config.ownerJid) || (() => {
+    const n = session.getState().number;
+    return n ? normJid(n + '@s.whatsapp.net') : '';
+  })();
+
+  // ---- Messages in the owner's own chat (self-chat) ----
+  if (fromMe || (ownJid && normJid(jid) === ownJid)) {
+    const isOwner = !ownJid || normJid(jid) === ownJid;
     if (isVoice(msg)) {
       if (isOwner) return commands.handleSelfVoice(sock, msg);
       return;

@@ -99,28 +99,93 @@ function normalizeTokens(s) {
 
 function parseZipEntries(buf) {
   const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
-  const end = b.indexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])); // EOCD record
+
+  // EOCD must be found scanning BACKWARDS from the end (max 65557 bytes back).
+  // Using indexOf() breaks on archives whose compressed data happens to
+  // contain the 0x50 0x4b 0x05 0x06 byte pattern before the real EOCD.
+  const sigEocd = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  let end = -1;
+  const scanStart = Math.max(0, b.length - 65557);
+  for (let i = b.length - 22; i >= Math.max(scanStart, 0); i--) {
+    if (b[i] === sigEocd[0] && b.readUInt32LE(i) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
   if (end < 0) throw new Error('not a zip file');
-  const count = b.readUInt16LE(end + 10);
+
+  let count = b.readUInt16LE(end + 10);
   let cd = b.readUInt32LE(end + 16);
-  if (cd === 0xffffffff) throw new Error('zip64 archives not supported');
+  let cdSize = b.readUInt32LE(end + 12);
+
+  // ZIP64? The locator always sits 20 bytes before the EOCD record.
+  const needZip64 = count === 0xffff || cd === 0xffffffff || cdSize === 0xffffffff;
+  if (needZip64) {
+    const loc = end - 20;
+    if (loc >= 0 && b.readUInt32LE(loc) === 0x07064b50) {
+      const z64 = b.readUInt32LE(loc + 8);
+      if (b.readUInt32LE(z64) === 0x06064b50) {
+        const total = b.readBigUInt64LE(z64 + 32);
+        const cdOff = b.readBigUInt64LE(z64 + 48);
+        if (total <= BigInt(Number.MAX_SAFE_INTEGER)) count = Number(total);
+        if (cdOff <= BigInt(Number.MAX_SAFE_INTEGER)) cd = Number(cdOff);
+      }
+    }
+  }
+
   const entries = [];
   for (let i = 0; i < count; i++) {
+    if (cd < 0 || cd + 46 > b.length) throw new Error('bad zip central directory');
     if (b.readUInt32LE(cd) !== 0x02014b50) throw new Error('bad zip central directory');
+
     const method = b.readUInt16LE(cd + 10);
-    const compSize = b.readUInt32LE(cd + 20);
-    const nameLen = b.readUInt16LE(cd + 28);
+    let compSize = b.readUInt32LE(cd + 20);
+    let nameLen = b.readUInt16LE(cd + 28);
     const extraLen = b.readUInt16LE(cd + 30);
     const commentLen = b.readUInt16LE(cd + 32);
-    const lho = b.readUInt32LE(cd + 42);
-    const name = b.toString('utf8', cd + 46, cd + 46 + nameLen).replace(/^.*[\/\\]/, '');
+    let lho = b.readUInt32LE(cd + 42);
+
+    // ZIP64 sizes/offsets live in the per-entry extra field (tag 0x0001).
+    // Standard field order: uncompressed(8), compressed(8), local-header-offset(8).
+    if (compSize === 0xffffffff || lho === 0xffffffff) {
+      let ex = cd + 46 + nameLen;
+      const exEnd = ex + extraLen;
+      while (ex + 4 <= exEnd) {
+        const tag = b.readUInt16LE(ex);
+        const sz = b.readUInt16LE(ex + 2);
+        if (tag === 0x0001) {
+          let o = ex + 4;
+          if (compSize === 0xffffffff || lho === 0xffffffff) {
+            if (o + 8 <= exEnd) o += 8; // skip uncompressed size
+            if (compSize === 0xffffffff && o + 8 <= exEnd) { compSize = Number(b.readBigUInt64LE(o)); o += 8; }
+            if (lho === 0xffffffff && o + 8 <= exEnd) { lho = Number(b.readBigUInt64LE(o)); o += 8; }
+          }
+          break;
+        }
+        ex += 4 + sz;
+      }
+    }
+
+    const name = b
+      .toString('utf8', cd + 46, cd + 46 + nameLen)
+      .replace(/^.*[\/\\]/, '');
+    if (/\/$/.test(name)) { cd += 46 + nameLen + extraLen + commentLen; continue; } // directory entry
+
+    if (lho < 0 || lho + 30 > b.length) throw new Error('bad zip local header');
     const lname = b.readUInt16LE(lho + 26);
     const lextra = b.readUInt16LE(lho + 28);
-    const data = b.subarray(lho + 30 + lname + lextra, lho + 30 + lname + lextra + compSize);
+    const start = lho + 30 + lname + lextra;
+    const data = b.subarray(start, start + compSize);
+    if (data.length !== compSize) throw new Error('zip data truncated');
+
     let text = '';
-    if (method === 0) text = data.toString('utf8');
-    else if (method === 8) text = zlib.inflateRawSync(data).toString('utf8');
-    else throw new Error(`unsupported zip method ${method}`);
+    try {
+      if (method === 0) text = data.toString('utf8');
+      else if (method === 8) text = zlib.inflateRawSync(data).toString('utf8');
+      else throw new Error(`untracked zip entry: ${name}`);
+    } catch (e) {
+      throw new Error(`zip entry "${name}" could not be read (${method}): ${e.message}`);
+    }
     entries.push({ name, text });
     cd += 46 + nameLen + extraLen + commentLen;
   }

@@ -932,7 +932,10 @@ async function handler(req, res) {
       const raw = await readBodyBuffer(req);
       const owner = req.headers['x-owner'] || config.ownerPhone || '';
       const fileName = req.headers['x-filename'] || '';
-      const isZip = /zip/i.test(req.headers['content-type'] || '') || /\.zip$/i.test(fileName);
+      const isZip =
+        /zip/i.test(req.headers['content-type'] || '') ||
+        /\.zip$/i.test(fileName) ||
+        (raw.length >= 4 && raw[0] === 0x50 && raw[1] === 0x4b && raw[2] === 0x03 && raw[3] === 0x04);
       const report = { files: [], sourced: 0, added: 0, matched: 0, skipped: 0, facts: 0, memories: 0, errors: 0 };
       const batches = [];
 
@@ -943,7 +946,8 @@ async function handler(req, res) {
         if (isZip && !texts.length) throw new Error('no .txt chat files found in the zip');
         for (const t of texts) {
           const parsed = trainer.parseWhatsAppExport(t.text, owner);
-          for (const s of parsed.texts) store.addStyleSample('training', s);
+          const label = parsed.otherLabels.length ? 'import:' + parsed.otherLabels[0] : 'training';
+          for (const s of parsed.texts) store.addStyleSample(label, s);
           report.files.push({ file: t.name, matched: parsed.matched, skipped: parsed.skipped, added: parsed.texts.length });
           report.sourced += 1;
           report.matched += parsed.matched;
