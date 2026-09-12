@@ -151,7 +151,12 @@ async function startBot() {
     }
   });
 
-  sock.ev.on('contacts.upsert', () => {
+  sock.ev.on('contacts.upsert', (contacts = []) => {
+    for (const c of contacts || []) {
+      const jid = c.id || c.lid || '';
+      const name = c.name || c.notify || c.verifiedName || '';
+      if (jid && name) store.saveContact(jid, name);
+    }
     contacts.sync(sock).catch(() => {});
   });
 

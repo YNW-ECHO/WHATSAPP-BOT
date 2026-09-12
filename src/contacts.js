@@ -3,7 +3,14 @@ const store = require('./store');
 
 async function sync(sock) {
   try {
-    const map = await sock.fetchContacts();
+    let map = {};
+    const storeObj = sock.store;
+    if (storeObj && storeObj.contacts) {
+      for (const [jid, c] of storeObj.contacts) map[jid] = c;
+    }
+    if (!Object.keys(map).length && typeof sock.fetchContacts === 'function') {
+      map = await sock.fetchContacts();
+    }
     let n = 0;
     for (const [jid, c] of Object.entries(map || {})) {
       if (!jid || !jid.endsWith('@s.whatsapp.net')) continue;
@@ -13,7 +20,7 @@ async function sync(sock) {
         n++;
       }
     }
-    logger.info(`contacts synced: ${n}`);
+    if (n) logger.info(`contacts synced: ${n}`);
     return n;
   } catch (e) {
     logger.warn('contacts sync failed:', e.message);
