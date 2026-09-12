@@ -5,7 +5,6 @@ const logger = require('./logger');
 const store = require('./store');
 const session = require('./session');
 const { config } = require('./config');
-const { readDelay } = require('./human');
 const statusHandler = require('./status');
 const commands = require('./commands');
 const replyEngine = require('./reply');
@@ -72,7 +71,7 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
     logger.warn('transcribe failed:', e.message);
   }
   if (!transcript) {
-    await readQuietly(sock, key);
+    // Can't transcribe → leave the voice note unread (no blue-tick bait).
     return;
   }
   store.addVoiceLog(jid, 'in', transcript);
@@ -98,6 +97,7 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
         await sock.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true });
         store.addVoiceLog(jid, 'out', reply);
         logger.info(`voice reply sent → ${jid}`);
+        await readQuietly(sock, key);
         return;
       }
       logger.warn('ffmpeg unavailable — voice reply degraded to text');
@@ -107,6 +107,7 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
   }
 
   await sock.sendMessage(jid, { text: reply });
+  await readQuietly(sock, key);
 }
 
 async function route(sock, msg) {
@@ -158,10 +159,9 @@ async function route(sock, msg) {
 
   // ---- Incoming messages (from other people) ----
   const chat = store.getChat(jid);
-  if (chat.muted || !chat.auto_reply) {
-    await readQuietly(sock, key);
-    return;
-  }
+  // Muted / auto-reply disabled: leave the message unread so ticks stay
+  // grey until the owner reads it themselves (don't steal blue ticks).
+  if (chat.muted || !chat.auto_reply) return;
 
   // §3.6 Voice notes from contacts
   if (isVoice(msg)) {
@@ -179,10 +179,14 @@ async function route(sock, msg) {
   }
   if (isGroup && !config.allowGroups) return;
   if (isSticker(msg)) return;
+  // Media-only messages (no text): don't read or "reply" to silence — leave
+  // them for the owner to see, never steal blue ticks.
+  if (!text) return;
 
   const now = Date.now();
+  // Spacing guard: silently throttle, but NEVER read the message — a blue
+  // tick with no reply is exactly the "blueticking" bug.
   if (session.isHot(jid, config.minReplySpacing) || now - (chat.last_sent_at || 0) < config.minReplySpacing) {
-    await readQuietly(sock, key);
     return;
   }
   session.markActive(jid);
@@ -190,10 +194,6 @@ async function route(sock, msg) {
   // Attach imported person memory the first time this contact starts chatting,
   // so the bot already knows them (never forgets them after that).
   summarizer.attachMemoryFor(jid, store.getContactName(jid));
-
-  // Human-like: mark as read after a short delay (don't block the reply path)
-  const rd = readDelay(text.length + 5);
-  setTimeout(() => readQuietly(sock, key), rd);
 
   try {
     // Generate the reply (fast AI, may fetch web info) …
@@ -208,6 +208,8 @@ async function route(sock, msg) {
       return;
     }
     await sock.sendMessage(jid, { text: reply });
+    // Blue tick only AFTER the reply is actually sent.
+    await readQuietly(sock, key);
     await session.stopTyping(jid);
     store.setLastSent(jid, Date.now());
     store.addHistory(jid, 'user', text);
