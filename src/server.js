@@ -100,9 +100,23 @@ function layout(navActive, main) {
     `setInterval(()=>{const d=new Date();document.getElementById('clock').textContent=d.toLocaleTimeString();},1000);</script>`;
 }
 
+function startKeepAlive() {
+  const url = config.keepAliveUrl;
+  if (!url) return;
+  const ping = async () => {
+    try {
+      const headers = config.keepAliveToken ? { Authorization: `Bearer ${config.keepAliveToken}` } : {};
+      await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+    } catch (e) {}
+  };
+  setInterval(ping, 5 * 60 * 1000);
+  logger.info(`keepalive → ${url} every 5min`);
+}
+
 function startServer() {
   const server = http.createServer(handler);
   server.listen(config.port, () => logger.info(`dashboard on :${config.port}`));
+  startKeepAlive();
   return server;
 }
 

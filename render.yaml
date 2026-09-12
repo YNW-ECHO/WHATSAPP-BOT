@@ -14,7 +14,11 @@ services:
       - key: NODE_VERSION
         value: "20"
       - key: AI_PROVIDER
-        value: openai
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: qwen/qwen3.8-27b
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
