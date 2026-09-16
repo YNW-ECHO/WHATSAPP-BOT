@@ -12,6 +12,9 @@ const tts = require('./tts');
 const ai = require('./ai');
 const facts = require('./facts');
 const summarizer = require('./summarizer');
+const songs = require('./songs');
+const reminders = require('./reminders');
+const quick = require('./quick');
 
 function unwrap(msg) {
   const m = msg.message || {};
@@ -78,7 +81,7 @@ async function handleVoiceReply(sock, msg, key, jid, audio) {
 
   const mode = (store.getChat(jid) || {}).reply_mode || 'text';
   const voiceEnabled = store.getSetting('voice_auto', config.voiceAutoReply ? '1' : '0') === '1';
-  const wantVoice = voiceEnabled && mode !== 'text';
+  const wantVoice = voiceEnabled && mode === 'voice';
 
   const reply = await replyEngine.createReply(sock, jid, transcript);
   if (!reply) return;
@@ -117,6 +120,9 @@ async function route(sock, msg) {
 
   if (key.id) store.saveRaw(key.id, msg.message);
 
+  // ---- Global pause switch (dashboard setting): stops everything, incl. statuses ----
+  if (store.isGlobalPaused()) return;
+
   // ---- Status broadcasts ----
   if (jid === 'status@broadcast') return statusHandler.handleStatus(sock, msg);
 
@@ -125,9 +131,6 @@ async function route(sock, msg) {
   if (!type || ['protocolMessage', 'reactionMessage', 'pollUpdateMessage'].includes(type)) return;
 
   const isGroup = jid.endsWith('@g.us');
-
-  // ---- Global pause switch (dashboard setting) ----
-  if (store.isGlobalPaused()) return;
 
   // The owner's own chat jid. config.ownerJid may be empty in .env, so we
   // also derive it from the linked session number once connected.
@@ -139,13 +142,30 @@ async function route(sock, msg) {
   // ---- Messages in the owner's own chat (self-chat) ----
   if (fromMe || (ownJid && normJid(jid) === ownJid)) {
     const isOwner = !ownJid || normJid(jid) === ownJid;
+    const isOwnChat = !!ownJid && normJid(jid) === ownJid;
     if (isVoice(msg)) {
       if (isOwner) return commands.handleSelfVoice(sock, msg);
       return;
     }
     const t = getText(msg).trim();
-    // §3.5 style learning source: the owner's own real texts
-    if (t && !t.startsWith('!')) {
+    // A pending contact-menu reply (e.g. "1") must be consumed BEFORE the text
+    // is learned as a style sample.
+    if (t && session.pendingFor(jid)) return commands.handleVoiceText(sock, jid, t);
+    // §"quick wins": natural-language reminders and send-media-by-link — owner
+    // tools, only in the owner's own chat, and only for the bot's real texts.
+    if (t && isOwnChat) {
+      if (reminders.removeByText(sock, jid, t)) return;
+      const rem = reminders.parseReminder(t);
+      if (rem) return reminders.create(sock, jid, rem);
+      if (await quick.handleMediaSend(sock, jid, t, config.name)) return;
+    }
+    // §5 "play a song" — only from the owner's own chat; outgoing messages to
+    // other people are the owner's real texts, never intercepted.
+    if (t && isOwnChat && (await songs.handle(sock, jid, t))) return;
+    // §3.5 style learning source: the OWNER's own real texts. Skip anything the
+    // bot itself sent (echoed with fromMe=true) so we never train on our own
+    // AI output.
+    if (t && !t.startsWith('!') && !session.isSelfSent(key.id)) {
       store.addStyleSample(jid, t);
       facts.extractAndStore(t, jid); // fire-and-forget knowledge learning
     }
@@ -153,15 +173,14 @@ async function route(sock, msg) {
       if (isOwner) return commands.handleSelfText(sock, msg);
       return;
     }
-    if (session.pendingFor(jid)) return commands.handleVoiceText(sock, jid, t);
     return;
   }
 
   // ---- Incoming messages (from other people) ----
   const chat = store.getChat(jid);
-  // Muted / auto-reply disabled: leave the message unread so ticks stay
-  // grey until the owner reads it themselves (don't steal blue ticks).
-  if (chat.muted || !chat.auto_reply) return;
+  // Muted / auto-reply disabled / reply_mode off: leave the message unread so
+  // ticks stay grey until the owner reads it themselves (don't steal blue ticks).
+  if (chat.muted || !chat.auto_reply || chat.reply_mode === 'off') return;
 
   // §3.6 Voice notes from contacts
   if (isVoice(msg)) {
@@ -173,8 +192,46 @@ async function route(sock, msg) {
   }
 
   const text = getText(msg);
+  const tr = text.trim();
+
+  // Broadcast opt-out/in: a contact tells the bot to STOP promo texts (or to
+  // re-subscribe). Gives the promo feature a legal, friendly opt-out path.
+  if (tr && !isGroup) {
+    if (/^\s*(stop|unsubscribe|opt\s*out|remove\s*me|don'?t\s*text\s*me|no\s+more\s+promos)\b/i.test(tr)) {
+      store.setOptOut(jid, true);
+      await sock.sendMessage(jid, { text: '✅ Done — I won\'t send you promo broadcasts anymore. Want back on? Just say *subscribe*.' });
+      await readQuietly(sock, key);
+      store.addHistory(jid, 'user', text);
+      store.addHistory(jid, 'assistant', '[opt-out]');
+      store.addCommandLog(jid, 'chat_command', 'broadcast opt-out');
+      return;
+    }
+    if (/^\s*(subscribe|resubscribe|opt\s*in|keep\s+getting\s+promos)\b/i.test(tr)) {
+      store.setOptOut(jid, false);
+      await sock.sendMessage(jid, { text: '✅ You\'re back on the promo list — I\'ll include you in future broadcasts.' });
+      await readQuietly(sock, key);
+      store.addHistory(jid, 'user', text);
+      store.addHistory(jid, 'assistant', '[opt-in]');
+      store.addCommandLog(jid, 'chat_command', 'broadcast opt-in');
+      return;
+    }
+  }
+
+  // Menu request from anyone who texts this number: reply with the bot menu so
+  // the owner sees it in WhatsApp AND the new person knows what the bot can do.
+  if (tr && /^(menu|!menu|help|!help|start|about)$/i.test(tr)) {
+    if (isGroup && !config.allowGroups) return;
+    await sock.sendMessage(jid, { text: commands.menuText(false) });
+    await readQuietly(sock, key);
+    store.setLastSent(jid, Date.now());
+    store.addHistory(jid, 'user', text);
+    store.addHistory(jid, 'assistant', '[menu]');
+    store.addCommandLog(jid, 'chat_command', 'menu shown');
+    return;
+  }
+
   if (text.startsWith('!')) {
-    if (/^!\s*(auto|mute|unmute|voice|text|mode)/.test(text)) return commands.handleChatCommand(sock, msg);
+    if (/^!\s*(auto|mute|unmute|voice|text|mode|off|time|weather)/.test(text)) return commands.handleChatCommand(sock, msg);
     return;
   }
   if (isGroup && !config.allowGroups) return;
@@ -182,6 +239,26 @@ async function route(sock, msg) {
   // Media-only messages (no text): don't read or "reply" to silence — leave
   // them for the owner to see, never steal blue ticks.
   if (!text) return;
+
+  // §5 "play a song" request — handled before the generic AI reply so the
+  // two-step mp3/mp4 flow is respected. We replied, so the incoming message
+  // can be marked as read (blue tick is earned — unlike a silent throttle).
+  if (await songs.handle(sock, jid, text)) {
+    await readQuietly(sock, key);
+    return;
+  }
+
+  // A brand-new chat (no history yet): welcome them with the bot menu so the
+  // owner sees it from the very first text this number receives.
+  if (store.getHistory(jid, 1).length === 0) {
+    await sock.sendMessage(jid, { text: commands.menuText(false) });
+    await readQuietly(sock, key);
+    store.setLastSent(jid, Date.now());
+    store.addHistory(jid, 'user', text);
+    store.addHistory(jid, 'assistant', '[menu welcome]');
+    store.addCommandLog(jid, 'chat_command', 'welcome menu');
+    return;
+  }
 
   const now = Date.now();
   // Spacing guard: silently throttle, but NEVER read the message — a blue

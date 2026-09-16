@@ -16,12 +16,8 @@ async function withTimeout(promise, ms, fallback = null) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function readDelay(textLen) {
-  return rand(1200, Math.min(5500, 1500 + textLen * 18));
-}
-
 function typingDelay(textLen) {
   return rand(1200, Math.min(config.maxReplyDelay, 1000 + textLen * 12));
 }
 
-module.exports = { rand, sleep, withTimeout, readDelay, typingDelay };
+module.exports = { rand, sleep, withTimeout, typingDelay };

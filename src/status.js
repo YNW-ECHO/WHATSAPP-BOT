@@ -1,6 +1,7 @@
 const { getContentType } = require('@whiskeysockets/baileys');
 const logger = require('./logger');
 const store = require('./store');
+const session = require('./session');
 const { config } = require('./config');
 const { rand } = require('./human');
 
@@ -21,6 +22,8 @@ async function handleStatus(sock, msg) {
   const sender = msg.key.participant || 'someone';
   const delay = rand(3000, 12000); // not instant → looks natural
   setTimeout(async () => {
+    // If the bot reconnected meanwhile, sock is a dead socket — bail out.
+    if (session.getSocket() !== sock) return;
     try {
       await sock.readMessages([msg.key]);
       logger.info(`viewed status by ${sender}`);

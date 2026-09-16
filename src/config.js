@@ -14,7 +14,7 @@ function phoneFromOwnerJid(jid) {
 }
 
 const config = {
-  name: process.env.BOT_NAME || 'Niaji',
+  name: process.env.BOT_NAME || 'CHRIS',
   aiProvider: (process.env.AI_PROVIDER || 'openai').toLowerCase(),
   openaiKey: process.env.OPENAI_API_KEY || '',
   anthropicKey: process.env.ANTHROPIC_API_KEY || '',
@@ -48,6 +48,17 @@ const config = {
   keepAliveUrl: process.env.KEEPALIVE_URL || '',
   keepAliveToken: process.env.KEEPALIVE_TOKEN || '',
   port: Number(process.env.PORT || 3000),
+  // Sponsor/ad slot that plays *before* each delivered song. Empty = sponsor
+  // feature off. Voice note is auto-generated from SPONSOR_TEXT via the built-in
+  // AI TTS, or you can supply your own clip with SPONSOR_AUDIO_URL.
+  sponsor: {
+    enabled: !!(process.env.SPONSOR_NAME || process.env.SPONSOR_TEXT || process.env.SPONSOR_AUDIO_URL),
+    name: (process.env.SPONSOR_NAME || '').trim(),
+    text: (process.env.SPONSOR_TEXT || '').trim(),
+    audioUrl: (process.env.SPONSOR_AUDIO_URL || '').trim(),
+    voice: (process.env.SPONSOR_VOICE || process.env.TTS_VOICE || 'alloy').trim(),
+    tts: bool(process.env.SPONSOR_TTS, true),
+  },
 };
 
 module.exports = { config, bool };

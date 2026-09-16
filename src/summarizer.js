@@ -60,11 +60,6 @@ async function maybeUpdate(jid) {
   }
 }
 
-function summaryForPrompt(jid) {
-  const s = store.getSummary(jid);
-  return s ? s.summary : '';
-}
-
 function digitsOf(s) {
   return String(s || '').replace(/\D/g, '');
 }
@@ -113,4 +108,4 @@ function attachMemoryFor(jid, contactName) {
   logger.info(`attached imported memory → ${jid}`);
 }
 
-module.exports = { maybeUpdate, summaryForPrompt, importMemory, attachMemoryFor, THRESHOLD, WINDOW };
+module.exports = { maybeUpdate, importMemory, attachMemoryFor, THRESHOLD, WINDOW };

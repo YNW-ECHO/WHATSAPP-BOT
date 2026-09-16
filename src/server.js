@@ -1,5 +1,7 @@
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const logger = require('./logger');
 const { config } = require('./config');
 const session = require('./session');
@@ -13,6 +15,37 @@ const contacts = require('./contacts');
 let startedAt = Date.now();
 const PASSWORD = config.dashPassword;
 const sessions = new Map();
+let broadcastJob = null;
+
+// Sends a promo to every saved contact except opted-out ones. One-by-one with
+// a gentle pause so WhatsApp never sees a burst (which would flag the number).
+async function runBroadcast(text) {
+  const sock = session.getSocket();
+  const list = store.getContacts().filter((c) => !store.isOptedOut(c.jid));
+  const total = list.length;
+  broadcastJob = { running: true, total, sent: 0, failed: 0, current: '', startedAt: Date.now() };
+  if (total > 5000) {
+    broadcastJob.running = false;
+    broadcastJob.error = `Too many contacts (${total}). Broadcast is capped at 5000.`;
+    return;
+  }
+  for (const c of list) {
+    if (!broadcastJob.running) break;
+    try {
+      await sock.sendMessage(c.jid, { text });
+      broadcastJob.sent++;
+      broadcastJob.current = c.name || c.jid;
+    } catch (e) {
+      broadcastJob.failed++;
+      broadcastJob.current = c.name || c.jid;
+    }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  broadcastJob.running = false;
+  store.setSetting('last_broadcast_text', String(text).slice(0, 500));
+  store.setSetting('last_broadcast_at', String(Date.now()));
+  store.setSetting('last_broadcast_sent', String(broadcastJob.sent));
+}
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -28,8 +61,19 @@ function html(res, code, body) {
 function readBody(req) {
   return new Promise((resolve) => {
     let d = '';
-    req.on('data', (c) => { d += c; if (d.length > 20e6) req.destroy(); });
-    req.on('end', () => resolve(d));
+    const done = () => resolve(d);
+    req.on('data', (c) => {
+      d += c;
+      if (d.length > 20e6) req.destroy();
+    });
+    req.on('end', done);
+    req.on('error', done);
+    req.on('aborted', done);
+    req.on('close', () => {
+      // If the request was destroyed before 'end', settle anyway instead of
+      // hanging the handler forever.
+      if (!req.complete) resolve(d);
+    });
   });
 }
 
@@ -37,12 +81,18 @@ function readBodyBuffer(req) {
   return new Promise((resolve) => {
     const chunks = [];
     let size = 0;
+    const done = () => resolve(Buffer.concat(chunks));
     req.on('data', (c) => {
       chunks.push(c);
       size += c.length;
       if (size > 20e6) req.destroy();
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', done);
+    req.on('error', done);
+    req.on('aborted', done);
+    req.on('close', () => {
+      if (!req.complete) resolve(Buffer.concat(chunks));
+    });
   });
 }
 
@@ -245,6 +295,8 @@ function navLinks() {
     ['logs', '◫', 'Logs'],
     ['devices', '◈', 'Devices & Logins'],
     ['training', '◉', 'Training'],
+    ['ads', '▣', 'Ads'],
+    ['broadcast', '📣', 'Broadcast'],
     ['settings', '⚙', 'Settings'],
   ];
 }
@@ -346,7 +398,10 @@ async function doSend(){
 }
 window.addEventListener('DOMContentLoaded',()=>{
   const ov=$('sendOvl'); if(ov)ov.onclick=e=>{if(e.target===ov)ov.classList.remove('show');};
-  const to=$('to'); if(to)to.addEventListener('input',renderCList);
+  const to=$('to');
+  // Typing overrides any previously picked contact (the pick sets the value
+  // programmatically and does NOT fire 'input', so this only clears on real typing).
+  if(to)to.addEventListener('input',e=>{to.dataset.jid='';to.dataset.name='';renderCList();});
   const msg=$('msg'); if(msg)msg.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')doSend();});
 });
 // re-link
@@ -508,7 +563,7 @@ function load(){
       '<td>'+esc(r.name||'—')+'</td><td class="mut">'+esc(r.jid)+'</td>'+
       '<td><button class="'+(r.auto_reply?'ok':'link')+'" onclick="auto(&quot;'+qs(r.jid)+'&quot;,'+(!r.auto_reply)+')">'+(r.auto_reply?'on':'off')+'</button></td>'+
       '<td><button class="'+(r.muted?'bad':'link')+'" onclick="mute(&quot;'+qs(r.jid)+'&quot;,'+(!r.muted)+')">'+(r.muted?'muted':'live')+'</button></td>'+
-      '<td class="mut">'+(r.reply_mode=='voice'?'🎙':'text')+'</td>'+
+      '<td class="mut">'+(r.reply_mode=='voice'?'🎙':(r.reply_mode=='off'?'off':'text'))+'</td>'+
       '<td class="mut">'+esc(String(r.last_text||'').slice(0,90))+'</td><td>'+(r.msgs_today||0)+'</td>'+
       '<td class="row" style="margin:0;justify-content:flex-end">'+
         '<button class="link" onclick="openSend(&quot;'+qs(r.jid)+'&quot;,&quot;'+qs(r.name||r.jid)+'&quot;)">✉ send</button>'+
@@ -677,6 +732,235 @@ setInterval(draw,15000);draw();
 </script>`;
 }
 
+function adsPage() {
+  return `<div class="cols">
+ <div class="card" style="flex:1.4">
+   <div class="lab">Ad slot — plays before every song request</div>
+   <div class="row"><b style="flex:1">Ad slot active</b><button id="adsOn" class="ghost" onclick="toggleAds()">…</button></div>
+   <div class="field"><label>Business to advertise</label>
+     <input id="adName" placeholder="e.g. Mama Soko Bakeshop" autocomplete="off">
+   </div>
+   <div class="field"><label>Ad text (people read this after the voice note)</label>
+     <textarea id="adText" rows="4" placeholder="Hi! Want your advert here? Every song request plays your audio and text — ask the owner about a slot!"></textarea>
+   </div>
+   <div class="row" style="margin-top:14px">
+     <label class="chk" style="flex:1"><input type="checkbox" id="adTTS"> Use the AI voice note (reads the ad text aloud)</label>
+   </div>
+   <div class="field"><label>AI voice for the ad</label>
+     <select id="adVoice"></select>
+     <p class="sm">Pick the voice you&apos;d like to read your ad. Only used when the AI voice note is on.</p>
+   </div>
+   <div class="field"><label>… or record your own voice note and upload it from your phone</label>
+     <div class="row" style="margin:0">
+       <input type="file" id="adFile" accept="audio/*" style="flex:1">
+       <button class="primary" onclick="uploadAd()">Upload</button>
+       <button class="ghost" onclick="clearUpload()">Clear</button>
+     </div>
+     <p class="sm" id="upStatus" class="mut">—</p>
+   </div>
+   <div class="field"><label>External audio URL (advanced, optional — one of the three ways)</label>
+     <input id="adAudio" placeholder="https://example.com/your-ad.mp3" autocomplete="off">
+   </div>
+<div class="row"><button class="primary" onclick="saveAds()">Save ad</button><span class="sm" id="adStatus"></span></div>
+    <p class="sm">Any number that texts the bot and requests a song hears this ad first. Your business gets a slot; you get paid. 🎙️</p>
+  </div>
+  <div class="card">
+    <div class="row"><div class="lab" style="flex:1">📊 Ad reach report</div>
+      <button class="ghost" onclick="resetStats()">Reset</button></div>
+    <p class="sm">Every time the ad plays before a song, it counts here. This is your proof for sponsors.</p>
+    <div class="row"><b style="flex:1">Total impressions</b><span id="stTotal">—</span></div>
+    <div class="row"><b style="flex:1">Today</b><span id="stToday">—</span></div>
+    <div class="row"><b style="flex:1">Last 7 days</b><span id="stWeek">—</span></div>
+    <div class="lab" style="margin-top:12px">Last 7 days daily</div>
+    <div class="sm" id="stDays">—</div>
+  </div>
+ </div>
+<script>
+function adsCfg(){return fetch('/api/config').then(r=>r.json()).then(c=>c.sponsor||{enabled:false,name:'',text:'',audioUrl:'',voice:'alloy',tts:true,hasUpload:false,voices:{openai:[],elevenlabs:[]}});}
+function drawAds(){
+  adsCfg().then(s=>{
+    const b=$('adsOn'); b.textContent=s.enabled?'💰 Ad ON':'Ad OFF'; b.className=s.enabled?'primary':'ghost';
+    $('adName').value=s.name||''; $('adText').value=s.text||''; $('adAudio').value=s.audioUrl||'';
+    $('adTTS').checked=!!s.tts;
+    const sel=$('adVoice');
+    if(!sel.options.length){
+      (s.voices.openai||[]).forEach(v=>sel.add(new Option(v,v)));
+      (s.voices.elevenlabs||[]).forEach(v=>sel.add(new Option('elevenlabs: '+v,v)));
+    }
+    sel.value=(s.voices.openai||[]).includes(s.voice)?s.voice:((s.voices.elevenlabs||[]).includes(s.voice)?s.voice:'alloy');
+    const st=$('upStatus');
+    st.textContent=s.hasUpload?'✓ Your own recording is active (plays before every song)':'No recording uploaded yet — the AI voice or URL plays instead';
+    st.className='sm '+(s.hasUpload?'ok':'mut');
+  });
+}
+function toggleAds(){return adsCfg().then(s=>fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sponsor_enabled:!s.enabled})})).then(drawAds);}
+async function uploadAd(){
+  const f=$('adFile').files[0];
+  if(!f){alert('Pick an audio file from your phone first.');return;}
+  const st=$('upStatus'); st.textContent='Uploading…'; st.className='sm';
+  const buf=await f.arrayBuffer();
+  const r=await j('/api/sponsor/upload',{method:'POST',headers:{'content-type':f.type||'audio/mpeg'},body:buf});
+  if(r.ok){st.textContent='✓ Uploaded — your recording is now the live ad.';st.className='sm ok';}
+  else{st.textContent='Upload failed: '+(r.error||'try another file');st.className='sm bad';}
+  $('adFile').value=''; drawAds();
+}
+function clearUpload(){fetch('/api/sponsor/uploadclear',{method:'POST'}).then(drawAds);}
+function saveAds(){
+  const st=$('adStatus'); st.textContent='Saving…';
+  fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+    sponsor_name:$('adName').value,sponsor_text:$('adText').value,sponsor_audio_url:$('adAudio').value,
+    sponsor_tts:$('adTTS').checked,sponsor_voice:$('adVoice').value
+  })}).then(()=>{st.textContent='Saved ✓';setTimeout(()=>st.textContent='',1600);}).then(drawAds);
+}
+function drawStats(){
+  fetch('/api/ads/stats').then(r=>r.json()).then(d=>{
+    if(!d.ok)return;
+    $('stTotal').textContent=d.stats.total;
+    $('stToday').textContent=d.stats.today;
+    $('stWeek').textContent=d.stats.week;
+    $('stDays').innerHTML=d.stats.days.length
+      ? d.stats.days.map(x=>'<div class="row" style="margin:2px 0"><span class="mut" style="flex:1">'+x.day+'</span><b>'+x.n+'</b></div>').join('')
+      : 'No plays yet — send the menu to someone and ask for a song.';
+  }).catch(()=>{});
+}
+function resetStats(){
+  if(!confirm('Reset the ad impression counter?'))return;
+  fetch('/api/ads/reset',{method:'POST'}).then(drawStats);
+}
+drawAds();
+drawStats();
+setInterval(drawStats,10000);
+</script>`;
+}
+
+function broadcastPage() {
+  return `<div class="cols">
+ <div class="card" style="flex:1.3">
+   <div class="lab">📣 Promo broadcast</div>
+   <p class="sm">Write your promo, <b>send it to yourself first</b>, review it in WhatsApp, then broadcast to everyone. Or save drafts to reuse later. Recipients can reply <b>STOP</b> to leave the list.</p>
+   <div class="field"><label>Promo message</label>
+     <textarea id="bTxt" rows="6" placeholder="🔥 Weekend offer! Soko Fresh delivers today — order by 4pm and get 10% off. Tap me to order!"></textarea>
+   </div>
+   <div class="row" style="flex-wrap:wrap">
+     <button class="ghost" onclick="saveDraft()">💾 Save draft</button>
+     <button class="primary" onclick="sendTest()">✉ Send to me first</button>
+     <button class="primary" onclick="sendBroadcast()">Broadcast to everyone →</button>
+   </div>
+   <div class="err" id="bErr"></div>
+   <div id="bProg" style="display:none;margin-top:10px">
+     <div class="lab" id="bSt">—</div>
+     <div style="background:#222;border-radius:999px;overflow:hidden"><div id="bBar" style="width:0%;height:8px;background:var(--ok,#34d399)"></div></div>
+   </div>
+   <div class="lab" style="margin-top:16px">Saved drafts</div>
+   <div class="sm" id="dList">—</div>
+   <div class="lab" style="margin-top:16px">Last broadcast</div>
+   <p class="sm" id="bLast">—</p>
+ </div>
+ <div class="card">
+   <div class="lab">List health</div>
+   <div class="row"><b style="flex:1">Saved contacts</b><span id="cTotal">—</span></div>
+   <div class="row"><b style="flex:1">Opted out (won&apos;t get promos)</b><span id="cOut">—</span></div>
+   <div class="row"><b style="flex:1">Reaching on next send</b><span id="cReach">—</span></div>
+   <div class="lab" style="margin-top:14px">Opted-out contacts</div>
+   <div class="sm" id="cOutList">—</div>
+ </div>
+</div>
+<div class="ovl" id="bcastOvl"><div class="modal">
+  <h3>📣 Send promo to everyone?</h3>
+  <div class="lab">Final preview</div>
+  <div class="code" id="pcPrev" style="white-space:pre-wrap"></div>
+  <p class="sm" id="pcInfo">—</p>
+  <div class="row">
+    <button class="ghost" onclick="$('bcastOvl').classList.remove('show')">← Back / edit</button>
+    <button class="primary" onclick="doBroadcast()">Broadcast now →</button>
+  </div>
+</div></div>
+<script>
+let busy=false, pcText='';
+function stat(){return fetch('/api/broadcast/status').then(r=>r.json());}
+function draftsApi(){return fetch('/api/broadcast/drafts').then(r=>r.json());}
+async function sendTest(){
+  const t=$('bTxt').value.trim(),e=$('bErr');if(e)e.textContent='';
+  if(!t){if(e)e.textContent='Type a promo message first, then send it to yourself to review.';return;}
+  const st=await stat();
+  if(!st.ownerJid){if(e)e.textContent='Find your linked number in the header first (bot must be linked).';return;}
+  const r=await j('/api/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({to:st.ownerJid,message:t})});
+  if(r.ok){if(e)e.textContent='';alert('✅ Preview sent to your WhatsApp — review it there, then come back and broadcast.');}
+  else if(e)e.textContent='Preview failed: '+(r.error||'?');
+}
+async function sendBroadcast(){
+  const t=$('bTxt').value.trim(),e=$('bErr');if(e)e.textContent='';
+  if(!t){if(e)e.textContent='Nothing to broadcast yet — write a promo message first.';return;}
+  if(busy)return;
+  const st=await stat();
+  const reach=(st.contactsTotal||0)-(st.optedOutCount||0);
+  pcText=t;
+  $('pcPrev').textContent=t;
+  $('pcInfo').textContent='Will reach '+reach+' contact(s). Recipients can reply STOP to leave. You can also send it to yourself first (✉ button) to review it in WhatsApp.';
+  $('bcastOvl').classList.add('show');
+}
+async function doBroadcast(){
+  $('bcastOvl').classList.remove('show');
+  const e=$('bErr');if(e)e.textContent='';
+  const r=await j('/api/broadcast',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:pcText})});
+  if(r.ok){$('bProg').style.display='block';poll();}
+  else if(e&&r.error)e.textContent=r.error;
+}
+function poll(){
+  busy=true;
+  fetch('/api/broadcast/status').then(r=>r.json()).then(st=>{
+    const b=st.job;
+    if(b&&b.running){
+      $('bProg').style.display='block';
+      $('bSt').textContent='Sending '+(b.sent+b.failed)+' / '+b.total+' · '+b.current;
+      $('bBar').style.width=Math.round((b.sent+b.failed)/Math.max(1,b.total)*100)+'%';
+      setTimeout(poll,1500);
+    }else{
+      busy=false;
+      $('bSt').textContent='Done: '+(b?b.sent:0)+' sent · '+(b&&b.failed||0)+' failed of '+(b?b.total:0);
+      $('bBar').style.width='100%';
+      setTimeout(()=>{const p=$('bProg');if(p)p.style.display='none';},4000);
+      renderDrafts();load();
+    }
+  }).catch(()=>setTimeout(poll,2000));
+}
+function saveDraft(){
+  const t=$('bTxt').value.trim(),e=$('bErr');if(e)e.textContent='';
+  if(!t){if(e)e.textContent='Write a promo first, then save it as a draft.';return;}
+  j('/api/broadcast/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})}).then(r=>{
+    if(r.ok)renderDrafts(r.drafts||[]);
+  });
+}
+function delDraft(id){
+  j('/api/broadcast/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({remove:id})}).then(r=>{
+    if(r.ok)renderDrafts(r.drafts||[]);
+  });
+}
+function loadDraft(id){
+  draftsApi().then(d=>{
+    const dr=(d.drafts||[]).find(x=>x.id===String(id));
+    if(dr)$('bTxt').value=dr.text;
+  });
+}
+function renderDrafts(d){
+  const list=d||[];
+  $('dList').innerHTML=list.length
+    ? list.slice().reverse().map(x=>'<div class="row" style="margin:3px 0"><button class="opt" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadDraft('+x.id+')">'+esc(x.text.slice(0,60))+'</button><button class="ghost" onclick="delDraft('+x.id+')">✕</button></div>').join('')
+    : 'No drafts yet — write one and hit 💾 Save draft.';
+}
+function load(){
+  stat().then(st=>{
+    $('cTotal').textContent=st.contactsTotal;
+    $('cOut').textContent=st.optedOutCount;
+    $('cReach').textContent=(st.contactsTotal||0)-(st.optedOutCount||0);
+    $('cOutList').innerHTML=st.optedOut&&st.optedOut.length?st.optedOut.map(o=>esc(o.name)+' — <span class="mut">'+esc(o.jid)+'</span>').join('<br>'):'No one has opted out yet.';
+    $('bLast').textContent=st.last&&st.last.text?('“'+esc(st.last.text.slice(0,120))+'” · sent to '+st.last.sent+' · '+fmt(Number(st.last.at))):'No broadcast sent yet.';
+  });
+}
+renderDrafts();load();setInterval(load,6000);
+</script>`;
+}
+
 function logsPage(jid) {
   if (jid) {
     const q = encodeURIComponent(jid).replace(/'/g, '%27').replace(/!/g, '%21').replace(/\*/g, '%2A').replace(/~/g, '%7E');
@@ -770,6 +1054,9 @@ function startServer() {
 }
 
 async function handler(req, res) {
+  // Never crash on a connection that the client dropped mid-response.
+  req.on('error', () => {});
+  res.on('error', () => {});
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   const m = req.method;
@@ -994,6 +1281,12 @@ async function handler(req, res) {
       if (typeof b.status_react === 'boolean') store.setSetting('status_react', b.status_react ? '1' : '0');
       if (typeof b.voice_auto === 'boolean') store.setSetting('voice_auto', b.voice_auto ? '1' : '0');
       if (typeof b.system_prompt === 'string') store.setSetting('system_prompt', b.system_prompt);
+      if (typeof b.sponsor_enabled === 'boolean') store.setSetting('sponsor_enabled', b.sponsor_enabled ? '1' : '0');
+      if (typeof b.sponsor_tts === 'boolean') store.setSetting('sponsor_tts', b.sponsor_tts ? '1' : '0');
+      if (typeof b.sponsor_name === 'string') store.setSetting('sponsor_name', b.sponsor_name);
+      if (typeof b.sponsor_text === 'string') store.setSetting('sponsor_text', b.sponsor_text);
+      if (typeof b.sponsor_audio_url === 'string') store.setSetting('sponsor_audio_url', b.sponsor_audio_url);
+      if (typeof b.sponsor_voice === 'string') store.setSetting('sponsor_voice', b.sponsor_voice);
       const ch = b.jid ? store.getChat(b.jid) : null;
       if (ch) {
         if (typeof b.auto_reply === 'boolean') store.setAutoReply(b.jid, b.auto_reply);
@@ -1004,7 +1297,116 @@ async function handler(req, res) {
       return;
     }
 
+    if (m === 'POST' && p === '/api/sponsor/upload') {
+      const buf = await readBodyBuffer(req);
+      const ct = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!buf.length || buf.length > 15 * 1024 * 1024) {
+        json(res, 400, { ok: false, error: buf.length ? 'File too big (max 15 MB)' : 'Empty upload' });
+        return;
+      }
+      const dir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+      fs.mkdirSync(dir, { recursive: true });
+      const ext = ct.includes('ogg') ? 'ogg'
+        : ct.includes('mpeg') || ct.includes('mp3') ? 'mp3'
+          : ct.includes('wav') ? 'wav'
+            : ct.includes('m4a') || ct.includes('mp4') ? 'm4a'
+              : 'bin';
+      const file = path.join(dir, 'sponsor-ad.' + ext);
+      fs.writeFileSync(file, buf);
+      store.setSetting('sponsor_upload_path', file);
+      store.setSetting('sponsor_upload_mime', ct.includes('ogg') || ct.includes('opus') ? 'audio/ogg; codecs=opus' : (ct || 'audio/mpeg'));
+      store.setSetting('sponsor_audio_url', ''); // upload wins over URL
+      store.setSetting('sponsor_enabled', '1');
+      json(res, 200, { ok: true, ext });
+      return;
+    }
+
+    if (m === 'POST' && p === '/api/sponsor/uploadclear') {
+      store.setSetting('sponsor_upload_path', '');
+      store.setSetting('sponsor_upload_mime', '');
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (m === 'GET' && p === '/api/ads/stats') {
+      json(res, 200, { ok: true, stats: store.adImpressionStats() });
+      return;
+    }
+
+    if (m === 'POST' && p === '/api/ads/reset') {
+      store.clearAdImpressions();
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (m === 'POST' && p === '/api/broadcast') {
+      const parsed = parseJsonBody(await readBody(req));
+      if (!parsed.ok) { json(res, 400, { ok: false, error: parsed.error }); return; }
+      const text = String(parsed.value.text || '').trim();
+      if (!text) { json(res, 400, { ok: false, error: 'Promo text is required.' }); return; }
+      if (broadcastJob && broadcastJob.running) {
+        json(res, 409, { ok: false, error: 'A broadcast is already running — wait for it to finish.' });
+        return;
+      }
+      if (!session.getState().connected) {
+        json(res, 400, { ok: false, error: 'WhatsApp is not connected yet.' });
+        return;
+      }
+      runBroadcast(text);
+      json(res, 200, { ok: true, started: true });
+      return;
+    }
+
+    if (m === 'GET' && p === '/api/broadcast/status') {
+      const opted = store.optedOutList();
+      const num = String(session.getState().number || '').replace(/\D/g, '');
+      json(res, 200, {
+        ok: true,
+        job: broadcastJob,
+        contactsTotal: store.getContacts().length,
+        optedOutCount: opted.length,
+        optedOut: opted.slice(0, 50).map((o) => ({ jid: o.jid, name: store.getContactName(o.jid) || o.jid })),
+        ownerJid: num ? num + '@s.whatsapp.net' : '',
+        last: {
+          text: store.getSetting('last_broadcast_text', ''),
+          at: store.getSetting('last_broadcast_at', ''),
+          sent: store.getSetting('last_broadcast_sent', ''),
+        },
+      });
+      return;
+    }
+
+    if (m === 'GET' && p === '/api/broadcast/drafts') {
+      json(res, 200, { ok: true, drafts: store.listDrafts() });
+      return;
+    }
+
+    if (m === 'POST' && p === '/api/broadcast/drafts') {
+      const parsed = parseJsonBody(await readBody(req));
+      if (!parsed.ok) { json(res, 400, { ok: false, error: parsed.error }); return; }
+      if (typeof parsed.value.text === 'string') {
+        const id = store.addDraft(parsed.value.text);
+        if (!id) { json(res, 400, { ok: false, error: 'Draft text is empty.' }); return; }
+        json(res, 200, { ok: true, drafts: store.listDrafts() });
+        return;
+      }
+      if (parsed.value.remove) {
+        store.removeDraft(parsed.value.remove);
+        json(res, 200, { ok: true, drafts: store.listDrafts() });
+        return;
+      }
+      json(res, 400, { ok: false, error: 'Expected { text } to save or { remove: id } to delete.' });
+      return;
+    }
+
     if (m === 'GET' && p === '/api/config') {
+      const gs = (k, d) => {
+        const v = store.getSetting('sponsor_' + k, '');
+        return v === '' ? d : v;
+      };
+      const se = config.sponsor;
+      const setEn = store.getSetting('sponsor_enabled', '');
+      const setTts = store.getSetting('sponsor_tts', '');
       json(res, 200, {
         ok: true,
         paused: store.isGlobalPaused(),
@@ -1013,6 +1415,17 @@ async function handler(req, res) {
         system_prompt: store.getSetting('system_prompt', ''),
         provider: config.aiProvider,
         ttsProvider: config.ttsProvider,
+        sponsor: {
+          enabled: setEn === '' ? se.enabled : setEn === '1',
+          name: gs('name', se.name),
+          text: gs('text', se.text),
+          audioUrl: gs('audio_url', se.audioUrl),
+          voice: gs('voice', se.voice),
+          tts: setTts === '' ? se.tts : setTts === '1',
+          hasUpload: !!store.getSetting('sponsor_upload_path', ''),
+          fromEnv: !!se.enabled,
+          voices: tts.listVoices(),
+        },
         keys: {
           openai: !!config.openaiKey ? 'set' : 'unset',
           anthropic: !!config.anthropicKey ? 'set' : 'unset',
@@ -1041,6 +1454,8 @@ async function handler(req, res) {
   if (p === '/logs') return navPage('logs', logsPage(url.searchParams.get('jid') || ''));
   if (p === '/devices') return navPage('devices', devicesPage());
   if (p === '/training') return navPage('training', trainingPage());
+  if (p === '/ads') return navPage('ads', adsPage());
+  if (p === '/broadcast') return navPage('broadcast', broadcastPage());
   if (p === '/settings') return navPage('settings', settingsPage());
 
   html(res, 404, 'not found');

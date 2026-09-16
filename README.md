@@ -120,18 +120,30 @@ free tier this is the standard friend-approved trick.)
 
 | Command | What it does |
 |---|---|
-| `!help` | show commands |
+| `!menu` / `!help` (or `menu` / `help` / `start` in any chat) | the full bot menu |
 | `!now` | bot status (connection + contacts count) |
 | `!auto on` / `!auto off` | toggle auto-reply for that chat |
 | `!mute` / `!unmute` | silence / resume a chat |
-| `!voice` / `!text` / `!mode` | per-chat voice-reply mode on / off / show |
+| `!voice` / `!text` / `!mode` / `!off` | per-chat reply style on / off / show / pause |
 | `!send <name> <message>` | send a message to a contact |
 | `!contacts` | count + sync contacts |
+| `!time` | current date & time (Nairobi) |
+| `!weather [city]` | live weather (no key needed, default Nairobi) |
 | Voice note to yourself | “text <name> <message>” → sends it, confirms ✓ |
+
+Anyone who texts this number for the **first time** gets the bot menu as a welcome.
+No AI key or config needed for the menu — it always works.
+
+**Quick wins** ⚡
+- **Reminders** — in your own chat say *"remind me in 30 min to call Mama"* or *"remind me every Mon at 9am to pay rent"* (daily / weekly on specific days / monthlies — they all repeat automatically). Persisted in SQLite, survive restarts, fire straight into your own chat. `⏰ Reminder set!` confirms.
+- **Send media by link** — *"send https://…/photo.jpg to John"* downloads the file (max 10 MB) and delivers it to the named contact (or your own chat when no name is given) as an image / video / document.
+- **Daily rundown** — every morning ~07:00 Nairobi time the bot texts your own chat with the date, connection state, contacts, pending reminders and a random remembered fact.
 
 The bot replies with a **17-line-max human touch**: reads first, thinks with the AI, web-searches
 when it's a factual/slang question, then types and sends — in English, Swahili or Sheng, matching
 the person who wrote you.
+
+**Play a song** 🎵 — in any chat (or your own), type *"play rapstar by polo g"*. The bot finds it on YouTube, asks **mp3** (voice note) or **mp4** (video), and sends the media right into WhatsApp so you can play and save it.
 
 **Style learning** — the bot collects your own outgoing messages and injects up to
 `STYLE_SAMPLE_COUNT` of them into the AI prompt as a few-shot style guide, so replies sound

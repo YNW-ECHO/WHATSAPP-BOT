@@ -29,6 +29,7 @@ async function chat(messages, { maxTokens = 250 } = {}) {
         max_tokens: maxTokens,
         temperature: 0.8,
       }),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -49,6 +50,7 @@ async function chat(messages, { maxTokens = 250 } = {}) {
         temperature: 0.8,
         max_tokens: maxTokens,
       }),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) throw new Error(`groq ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -67,6 +69,7 @@ async function chat(messages, { maxTokens = 250 } = {}) {
           temperature: 0.8,
           max_tokens: maxTokens,
         }),
+        signal: AbortSignal.timeout(60000),
       }
     );
     if (!res.ok) throw new Error(`gemini ${res.status}: ${await res.text()}`);
@@ -84,6 +87,7 @@ async function chat(messages, { maxTokens = 250 } = {}) {
         temperature: 0.8,
         max_tokens: maxTokens,
       }),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) throw new Error(`openai ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -128,6 +132,7 @@ async function transcribeAudio(buffer, mime = 'audio/ogg') {
     method: 'POST',
     headers: { Authorization: `Bearer ${config.whisperKey}` },
     body: form,
+    signal: AbortSignal.timeout(30000),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'whisper failed');

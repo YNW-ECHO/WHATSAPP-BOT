@@ -32,18 +32,24 @@ async function duckDuckGoSearch(query) {
   });
   const html = await res.text();
   const results = [];
-  const blocks = html.split('<div class="result"').slice(1);
-  for (const block of blocks) {
-    const title = (block.match(/<a[^>]*rel="nofollow"[^>]*>([\s\S]*?)<\/a>/) || [])[1];
-    const snippet = (block.match(/class="result-snippet"[^>]*>([\s\S]*?)<\/td>/) || [])[1];
-    const link = (block.match(/uddg=([^&"']+)/) || [])[1];
-    if (!title && !snippet) continue;
+  // DDG HTML changed over time: match any anchor with rel=nofollow + the
+  // result-link marker, regardless of attribute order or quote style, then
+  // grab the snippet from the following result-snippet cell.
+  const linkRe = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = linkRe.exec(html)) !== null && results.length < 4) {
+    const tag = m[0];
+    if (!/rel\s*=\s*["']nofollow["']/i.test(tag) || !/\bresult-link\b/i.test(tag)) continue;
+    const href = (tag.match(/href\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
+    const title = decodeEntities(m[1].replace(/<[^>]*>/g, ''));
+    const uddg = href.match(/uddg=([^&]+)/);
+    const after = html.slice(linkRe.lastIndex);
+    const snip = after.match(/class\s*=\s*["']result-snippet["'][^>]*>([\s\S]*?)<\/td>/i);
     results.push({
-      title: decodeEntities(title),
-      snippet: decodeEntities(snippet),
-      link: link ? decodeURIComponent(link) : '',
+      title,
+      snippet: decodeEntities(snip ? snip[1].replace(/<[^>]*>/g, '') : ''),
+      link: uddg ? decodeURIComponent(uddg[1]) : decodeEntities(href),
     });
-    if (results.length >= 4) break;
   }
   return results;
 }

@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
+const { config } = require('./config');
 
 let db = null;
 const rawCache = new Map();
@@ -92,13 +93,59 @@ function init() {
       summary TEXT NOT NULL DEFAULT '',
       ts INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      text TEXT NOT NULL DEFAULT '',
+      due_at INTEGER NOT NULL,
+      sent INTEGER NOT NULL DEFAULT 0,
+      schedule TEXT NOT NULL DEFAULT '',
+      recurring INTEGER NOT NULL DEFAULT 0,
+      recipient_jid TEXT NOT NULL DEFAULT '',
+      recipient_name TEXT NOT NULL DEFAULT '',
+      song TEXT NOT NULL DEFAULT '',
+      ts INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ad_impressions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      jid TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS broadcast_out (
+      jid TEXT PRIMARY KEY,
+      ts INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS broadcast_drafts (
+      id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    );
   `);
+
+  // migrate older DBs (reminders existed without recurring/schedule/recipient/song)
+  try {
+    const remCols = db.prepare('PRAGMA table_info(reminders)').all().map((c) => c.name);
+    if (!remCols.includes('recurring')) {
+      db.exec('ALTER TABLE reminders ADD COLUMN recurring INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!remCols.includes('schedule')) {
+      db.exec("ALTER TABLE reminders ADD COLUMN schedule TEXT NOT NULL DEFAULT ''");
+    }
+    if (!remCols.includes('recipient_jid')) {
+      db.exec("ALTER TABLE reminders ADD COLUMN recipient_jid TEXT NOT NULL DEFAULT ''");
+    }
+    if (!remCols.includes('recipient_name')) {
+      db.exec("ALTER TABLE reminders ADD COLUMN recipient_name TEXT NOT NULL DEFAULT ''");
+    }
+    if (!remCols.includes('song')) {
+      db.exec("ALTER TABLE reminders ADD COLUMN song TEXT NOT NULL DEFAULT ''");
+    }
+  } catch (e) {}
 }
 
 function getChat(jid) {
   let row = db.prepare('SELECT * FROM chats WHERE jid = ?').get(jid);
   if (!row) {
-    db.prepare('INSERT INTO chats (jid) VALUES (?)').run(jid);
+    db.prepare('INSERT INTO chats (jid, auto_reply) VALUES (?, ?)').run(jid, config.autoReplyDefault ? 1 : 0);
     row = db.prepare('SELECT * FROM chats WHERE jid = ?').get(jid);
   }
   return row;
@@ -128,7 +175,7 @@ function addHistory(jid, role, text) {
 
 function getHistory(jid, limit = 8) {
   return db
-    .prepare('SELECT role, text FROM history WHERE jid = ? ORDER BY id DESC LIMIT ?')
+    .prepare('SELECT role, text, ts FROM history WHERE jid = ? ORDER BY id DESC LIMIT ?')
     .all(jid, limit)
     .reverse();
 }
@@ -306,6 +353,70 @@ function isGlobalPaused() {
   return getSetting('global_pause', '0') === '1';
 }
 
+// ---- ad impressions (sponsor slot reach) ----
+
+function addAdImpression(jid = '') {
+  db.prepare('INSERT INTO ad_impressions (ts, jid) VALUES (?, ?)').run(Date.now(), String(jid || ''));
+}
+
+function clearAdImpressions() {
+  db.prepare('DELETE FROM ad_impressions').run();
+}
+
+function adImpressionStats() {
+  const now = Date.now();
+  const dayStart = now - (now % 86400000);
+  const weekStart = dayStart - 6 * 86400000;
+  const total = db.prepare('SELECT COUNT(*) AS n FROM ad_impressions').get().n;
+  const today = db.prepare('SELECT COUNT(*) AS n FROM ad_impressions WHERE ts >= ?').get(dayStart).n;
+  const week = db.prepare('SELECT COUNT(*) AS n FROM ad_impressions WHERE ts >= ?').get(weekStart).n;
+  const dayMap = new Map();
+  for (const r of db.prepare('SELECT ts FROM ad_impressions WHERE ts >= ?').all(weekStart)) {
+    const d = new Date(r.ts).toISOString().slice(0, 10);
+    dayMap.set(d, (dayMap.get(d) || 0) + 1);
+  }
+  const days = [...dayMap.entries()]
+    .map(([day, n]) => ({ day, n }))
+    .sort((a, b) => (a.day < b.day ? -1 : 1));
+  return { total, today, week, days };
+}
+
+// ---- broadcast opt-outs ----
+
+function setOptOut(jid, on) {
+  if (on) db.prepare('INSERT INTO broadcast_out (jid, ts) VALUES (?, ?) ON CONFLICT(jid) DO UPDATE SET ts = excluded.ts').run(String(jid), Date.now());
+  else db.prepare('DELETE FROM broadcast_out WHERE jid = ?').run(String(jid));
+}
+
+function isOptedOut(jid) {
+  return !!db.prepare('SELECT 1 FROM broadcast_out WHERE jid = ?').get(String(jid));
+}
+
+function optedOutList() {
+  return db.prepare('SELECT jid, ts FROM broadcast_out ORDER BY ts DESC').all();
+}
+
+// ---- broadcast drafts ----
+
+const DRAFT_MAX = 20;
+
+function addDraft(text) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  db.prepare('DELETE FROM broadcast_drafts WHERE id NOT IN (SELECT id FROM broadcast_drafts ORDER BY ts DESC LIMIT ?)').run(DRAFT_MAX - 1);
+  const id = String(Date.now());
+  db.prepare('INSERT INTO broadcast_drafts (id, text, ts) VALUES (?, ?, ?)').run(id, t, Date.now());
+  return id;
+}
+
+function removeDraft(id) {
+  db.prepare('DELETE FROM broadcast_drafts WHERE id = ?').run(String(id));
+}
+
+function listDrafts() {
+  return db.prepare('SELECT id, text, ts FROM broadcast_drafts ORDER BY ts DESC').all();
+}
+
 function addDeviceLogin(d) {
   db.prepare(
     'INSERT INTO device_logins (kind, number, device, ip, location, detail, ts) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -318,6 +429,7 @@ function addDeviceLogin(d) {
     String(d.detail || '').slice(0, 300),
     d.ts || Date.now()
   );
+  db.prepare('DELETE FROM device_logins WHERE id NOT IN (SELECT id FROM device_logins ORDER BY id DESC LIMIT 500)').run();
 }
 
 function getDeviceLogins(limit = 100) {
@@ -463,11 +575,60 @@ function countHistorySince(jid, sinceId) {
   return db.prepare('SELECT COUNT(*) AS c FROM history WHERE jid = ? AND id > ?').get(jid, sinceId || 0).c;
 }
 
+/* ---- reminders (persisted so they survive restarts) ---- */
+
+function addReminder(text, dueAt, schedule, recurring, recipientJid, recipientName, song) {
+  const r = db
+    .prepare(
+      'INSERT INTO reminders (text, due_at, sent, schedule, recurring, recipient_jid, recipient_name, song, ts) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      String(text || '').slice(0, 500),
+      Math.max(Date.now(), Number(dueAt) || 0),
+      String(schedule || ''),
+      recurring ? 1 : 0,
+      String(recipientJid || ''),
+      String(recipientName || ''),
+      String(song || ''),
+      Date.now()
+    );
+  db.prepare('DELETE FROM reminders WHERE id NOT IN (SELECT id FROM reminders ORDER BY id DESC LIMIT 200)').run();
+  return Number(r.lastInsertRowid);
+}
+
+function getDueReminders(now) {
+  return db.prepare('SELECT * FROM reminders WHERE sent = 0 AND due_at <= ? ORDER BY due_at ASC LIMIT 20').all(now || Date.now());
+}
+
+function getReminders() {
+  return db.prepare('SELECT * FROM reminders WHERE sent = 0 ORDER BY due_at ASC LIMIT 200').all();
+}
+
+function countPendingReminders() {
+  return db.prepare('SELECT COUNT(*) AS c FROM reminders WHERE sent = 0').get().c;
+}
+
+function markReminderSent(id) {
+  db.prepare('UPDATE reminders SET sent = 1 WHERE id = ?').run(id);
+}
+
+function updateReminderNext(id, dueAt) {
+  db.prepare('UPDATE reminders SET due_at = ? WHERE id = ?').run(Math.max(Date.now(), Number(dueAt) || Date.now()), id);
+}
+
+function deleteReminder(id) {
+  db.prepare('DELETE FROM reminders WHERE id = ?').run(id);
+}
+
 module.exports = {
+  addAdImpression,
+  adImpressionStats,
+  clearAdImpressions,
   addCommandLog,
   addDeviceLogin,
   addFact,
   addHistory,
+  addReminder,
   addStyleSample,
   addVoiceLog,
   clearDeviceLogins,
@@ -478,7 +639,9 @@ module.exports = {
   countCommandLogsToday,
   countContacts,
   countHistorySince,
+  countPendingReminders,
   deleteFact,
+  deleteReminder,
   deleteStyleSample,
   deleteSummary,
   factsForPrompt,
@@ -487,10 +650,12 @@ module.exports = {
   getContactName,
   getContacts,
   getDeviceLogins,
+  getDueReminders,
   getFacts,
   getHistory,
   getPersonMemoryByName,
   getRaw,
+  getReminders,
   getSetting,
   getStyleSamples,
   getSummaries,
@@ -498,7 +663,15 @@ module.exports = {
   getVoiceLogs,
   init,
   isGlobalPaused,
+  isOptedOut,
   linkPersonMemory,
+  markReminderSent,
+  optedOutList,
+  setOptOut,
+  addDraft,
+  removeDraft,
+  listDrafts,
+  updateReminderNext,
   maxHistoryId,
   overviewStats,
   saveContact,

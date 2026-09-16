@@ -3,6 +3,8 @@ const { typingDelay, sleep } = require('./human');
 let sock = null;
 const hot = new Map();
 const pendingCommands = new Map();
+const sentIds = new Set();
+const PENDING_TTL = 10 * 60 * 1000; // a contact-confirmation menu goes stale in 10 min
 const state = {
   connection: 'connecting',
   connected: false,
@@ -59,7 +61,7 @@ function releaseHot(jid) {
 }
 
 function setPending(jid, data) {
-  pendingCommands.set(jid, data);
+  pendingCommands.set(jid, { at: Date.now(), ...data });
 }
 
 function clearPending(jid) {
@@ -67,7 +69,30 @@ function clearPending(jid) {
 }
 
 function pendingFor(jid) {
-  return pendingCommands.get(jid) || null;
+  const p = pendingCommands.get(jid);
+  if (!p) return null;
+  // A stale menu must never be confirmed by a later, unrelated message.
+  if (Date.now() - p.at > PENDING_TTL) {
+    pendingCommands.delete(jid);
+    return null;
+  }
+  return p;
+}
+
+// Remember message ids the bot itself sent (via sendMessage). Baileys echoes
+// the session's own outgoing messages back through messages.upsert with
+// key.fromMe = true, and we must NOT learn those as "owner style samples".
+function markSent(id) {
+  if (!id) return;
+  sentIds.add(String(id));
+  if (sentIds.size > 500) {
+    const first = sentIds.keys().next().value;
+    sentIds.delete(first);
+  }
+}
+
+function isSelfSent(id) {
+  return !!id && sentIds.has(String(id));
 }
 
 async function simulateTyping(jid, textLen) {
@@ -97,6 +122,8 @@ module.exports = {
   setPending,
   clearPending,
   pendingFor,
+  markSent,
+  isSelfSent,
   simulateTyping,
   stopTyping,
 };

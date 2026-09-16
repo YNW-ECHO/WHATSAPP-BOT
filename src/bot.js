@@ -16,6 +16,8 @@ const store = require('./store');
 const session = require('./session');
 const contacts = require('./contacts');
 const router = require('./router');
+const reminders = require('./reminders');
+const quick = require('./quick');
 const { sleep } = require('./human');
 
 const DEVICE_NAMES = {
@@ -123,6 +125,20 @@ async function startBot() {
   currentSock = sock;
   session.setSocket(sock);
   session.setState({ connection: 'connecting', connected: false });
+
+  // Quick wins background jobs: fire due reminders and the 7am daily rundown.
+  reminders.startLoop();
+  quick.startDaily();
+
+  // Wrap sendMessage so every outgoing message id is recorded. Baileys echoes
+  // the session's own sends back through messages.upsert with fromMe = true;
+  // recorded ids let the router distinguish bot replies from real owner texts.
+  const _origSend = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (...args) => {
+    const res = await _origSend(...args);
+    session.markSent(res?.key?.id || res?.id);
+    return res;
+  };
 
   sock.ev.on('creds.update', saveCreds);
 

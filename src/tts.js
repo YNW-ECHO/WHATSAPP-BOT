@@ -15,12 +15,21 @@ function ffmpegAvailable() {
   }
 }
 
-async function synthesize(text) {
+// Voice names the admin dashboard offers for sponsor ads.
+function listVoices() {
+  return {
+    openai: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+    elevenlabs: config.elevenLabsKey ? [config.elevenLabsVoiceId] : [],
+  };
+}
+
+async function synthesize(text, voice) {
   const provider = config.ttsProvider;
 
   if (provider === 'elevenlabs') {
     if (!config.elevenLabsKey) throw new Error('ELEVENLABS_API_KEY not set');
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${config.elevenLabsVoiceId}`;
+    const vId = voice && /^[A-Za-z0-9]{11,32}$/.test(voice) ? voice : config.elevenLabsVoiceId;
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${vId}`;
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -32,6 +41,7 @@ async function synthesize(text) {
         model_id: 'eleven_multilingual_v2',
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       }),
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`elevenlabs ${res.status}: ${await res.text()}`);
     return Buffer.from(await res.arrayBuffer());
@@ -44,9 +54,10 @@ async function synthesize(text) {
     headers: { Authorization: `Bearer ${config.openaiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({
       model: 'tts-1',
-      voice: config.ttsVoice,
+      voice: voice || config.ttsVoice,
       input: String(text).slice(0, 3000),
     }),
+    signal: AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`openai tts ${res.status}: ${await res.text()}`);
   return Buffer.from(await res.arrayBuffer());
@@ -60,15 +71,35 @@ function toOgg(buffer, mime = 'audio/mpeg') {
     const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = [];
     const err = [];
+    let settled = false;
+    const fail = (e) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (proc.exitCode === null) proc.kill();
+      } catch (e2) {}
+      reject(e);
+    };
+    const timer = setTimeout(() => fail(new Error('ffmpeg timed out')), 30000);
     proc.stdout.on('data', (c) => out.push(c));
     proc.stderr.on('data', (c) => err.push(c));
-    proc.on('error', (e) => reject(new Error('ffmpeg not available: ' + e.message)));
+    proc.on('error', (e) => {
+      clearTimeout(timer);
+      fail(new Error('ffmpeg not available: ' + e.message));
+    });
     proc.on('close', (code) => {
-      if (code !== 0) return reject(new Error('ffmpeg exited ' + code));
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0) {
+        const tail = Buffer.concat(err).toString().slice(-200);
+        return reject(new Error(`ffmpeg exited ${code}${tail ? ': ' + tail : ''}`));
+      }
+      settled = true;
       resolve(Buffer.concat(out));
     });
+    proc.stdin.on('error', () => {});
     proc.stdin.end(buffer);
   });
 }
 
-module.exports = { synthesize, toOgg, ffmpegAvailable };
+module.exports = { synthesize, toOgg, ffmpegAvailable, listVoices };

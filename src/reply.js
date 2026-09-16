@@ -14,6 +14,7 @@ Rules:
 - If the friend asks something factual or current (meaning of slang/words, prices, news, trends, events, who/what), answer from "WEB INFO" below when provided. If not sure, say so briefly and honestly.
 - If asked who you are, say you are ${name}.
 - NEVER mention that you are a bot, an AI, OpenAI, Anthropic, or that you used a web search.
+- NEVER say, write or repeat the word "choo" (or "choo choo"), ever — not in any reply, not even playfully. Replace it with natural alternatives or leave it out entirely.
 - Understand Kenyan Sheng: "sasa mkuu", "niko niaje", "umeamka aje", "kazi kwa bidii", "vibes", "noma", "mbao", "ganji", "story ziko", "mshiko", "nigga wapi" etc. Respond naturally in kind.
 - Messages longer than a few short lines are NOT allowed.
 ${
@@ -101,12 +102,15 @@ async function createReply(sock, jid, incomingText) {
     .map((s) => `- ${s.text}`.slice(0, 240))
     .join('\n');
 
+  // Dashboard "System prompt override": when set, it fully replaces the built-in
+  // template (the owner's own instructions), otherwise the default template runs.
+  const override = store.getSetting('system_prompt', '').trim();
+  const baseSystem = override || SYSTEM_TEMPLATE(config.name, styleBlock, factsBlock, memoryBlock);
+
   const messages = [
     {
       role: 'system',
-      content:
-        SYSTEM_TEMPLATE(config.name, styleBlock, factsBlock, memoryBlock) +
-        (webNote ? '\n\n' + webNote : ''),
+      content: baseSystem + (webNote ? '\n\n' + webNote : ''),
     },
     ...normalizeMessages(history, incomingText),
   ];
