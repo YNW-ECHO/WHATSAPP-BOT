@@ -116,6 +116,11 @@ async function startBot() {
   const sock = makeWASocket({
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, baileysLogger) },
     printQRInTerminal: false,
+    // WhatsApp rejects connections that report an outdated Web version with
+    // status 405 ("Connection Failure"). Pin the current version the way
+    // Baileys' own docs recommend so the registration/pairing handshake
+    // passes. Bump this if WhatsApp rolls the version forward and 405s return.
+    version: [2, 3000, 1033893291],
     browser: Browsers.macOS('Chrome'),
     logger: baileysLogger,
     markOnlineOnConnect: false,
