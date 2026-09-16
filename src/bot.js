@@ -68,10 +68,12 @@ function printQR(qr) {
   for (const l of body.slice(0, 24)) process.stdout.write(l + '\n');
 }
 
-async function tryPairingCode(sock) {
+async function tryPairingCode(sock, phone) {
   if (pairingRequested) return;
+  phone = phone || config.ownerPhone || store.getSetting('last_linked_number', '');
+  if (!phone) return;
   try {
-    const code = await sock.requestPairingCode(config.ownerPhone);
+    const code = await sock.requestPairingCode(phone);
     pairingRequested = true;
     session.setPairingCode(code);
     logger.info('PAIRING CODE — in WhatsApp: Settings → Linked devices → "Link with phone number"');
@@ -152,8 +154,11 @@ async function startBot() {
 
     if (qr) {
       session.setQr(qr);
-      if (config.ownerPhone) {
-        await tryPairingCode(sock);
+      // Always try pairing code first — use env phone, persisted phone, or any
+      // known number. Only fall back to QR print if we truly have nothing.
+      const phone = config.ownerPhone || store.getSetting('last_linked_number', '');
+      if (phone) {
+        await tryPairingCode(sock, phone);
         return;
       }
       printQR(qr);
@@ -162,6 +167,12 @@ async function startBot() {
     if (connection === 'open') {
       pairingRequested = false;
       recordConnection();
+      // Persist the linked number so relink can always request a pairing code
+      // even after wiping the session.
+      if (sock.user?.id) {
+        const num = String(sock.user.id.split('@')[0] || '').replace(/\D/g, '');
+        if (num) store.setSetting('last_linked_number', num);
+      }
       logger.info(`Connected as ${session.getState().number}`);
       contacts.sync(sock).then((n) => session.setState({ contacts: n })).catch(() => {});
     }
@@ -230,7 +241,7 @@ async function scheduleRestart(code) {
 
 // Dashboard "Re-link" button: back up the session, log out, wipe it, and
 // start fresh so a new pairing code/QR is produced for WhatsApp.
-async function relink() {
+async function relink(phone) {
   session.setState({ relinkPending: true, pairingCode: '', qr: '', connected: false, connection: 'relinking' });
   const authDir = findAuthDir();
   const backup = authDir + '.bak';
@@ -243,13 +254,21 @@ async function relink() {
 
   const sock = currentSock;
   currentSock = null;
+  session.setSocket(null);
   if (sock) {
     try {
-      await sock.logout();
+      // logout() can hang forever on an already-dead session (e.g. after a
+      // 405 rejection). Never let it block the relink.
+      await Promise.race([sock.logout().catch(() => {}), sleep(3000)]);
     } catch (e) {
       logger.warn('logout failed:', e.message);
     }
+    try { sock.end(); } catch (e) {}
   }
+
+  // Persist the phone number for pairing code generation.
+  const pairingPhone = (phone || '').replace(/\D/g, '') || store.getSetting('last_linked_number', '') || config.ownerPhone || '';
+  if (pairingPhone) store.setSetting('last_linked_number', pairingPhone);
 
   pairingRequested = false;
   try {
@@ -266,17 +285,20 @@ async function relink() {
     return { ok: false, error: e.message };
   }
 
-  // Poll briefly so the pairing code is ready when the response lands.
-  for (let i = 0; i < 20; i++) {
-    const code = session.getState().pairingCode;
-    if (code) {
-      logger.info(`relink: code ready → ${code}`);
-      return { ok: true, code, number: config.ownerPhone || '' };
+  // Poll until a pairing code OR QR is ready, so the dashboard always has
+  // something to show. Fall back to whatever state we have after the window.
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    const s = session.getState();
+    if (s.pairingCode || s.qr) {
+      session.setState({ relinkPending: false });
+      return { ok: true, code: s.pairingCode, qr: s.qr || '', number: pairingPhone };
     }
     await sleep(500);
   }
   session.setState({ relinkPending: false });
-  return { ok: true, code: session.getState().pairingCode, number: config.ownerPhone || '' };
+  const s = session.getState();
+  return { ok: true, code: s.pairingCode, qr: s.qr || '', number: pairingPhone };
 }
 
 module.exports = { startBot, relink, deviceName };

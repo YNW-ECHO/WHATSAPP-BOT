@@ -323,13 +323,18 @@ function modalRelink() {
   return `<div class="ovl" id="relinkOvl"><div class="modal">
 <h3>↻ Re-link WhatsApp</h3>
 <div id="relinkBody">
-<p class="sm">We'll log this device out, reset the session, and generate a fresh link so you (or anyone) can log the bot's WhatsApp in again.</p>
-<p class="sm">Opening WhatsApp: <b id="rlNumber">Settings → Linked devices → Link a device</b></p>
-<div class="code" id="rlCodeWrap" style="display:none">
-  <div class="lab">ENTER THIS CODE (or scan the QR from the console logs):</div>
-  <div class="big" id="rlCode"></div>
+<p class="sm">Reset the session and generate a fresh <b>pairing code</b>. Open WhatsApp on your phone.</p>
+<p class="sm" style="margin:0">WhatsApp → <b>Settings → Linked devices → Link with phone number</b></p>
+<div class="field" style="margin-top:12px"><label>Your WhatsApp phone number</label>
+  <input id="rlPhone" type="tel" placeholder="e.g. 254712345678" style="width:100%">
+  <p class="mut" style="margin:2px 0 0">Same number you use for WhatsApp. Used to generate the pairing code.</p>
 </div>
-<div class="row"><button id="rlBtn" class="primary">Generate new link</button><span class="sm" id="rlStatus"></span></div>
+<div class="code" id="rlCodeWrap" style="display:none">
+  <div class="lab">ENTER THIS CODE ON YOUR PHONE:</div>
+  <div class="big" id="rlCode" style="letter-spacing:5px;font-size:2rem;text-align:center;margin:8px 0"></div>
+</div>
+<div id="rlError" class="err" style="margin-top:6px"></div>
+<div class="row" style="margin-top:12px"><button id="rlBtn" class="primary">Generate pairing code</button><span class="sm" id="rlStatus"></span></div>
 </div></div></div>`;
 }
 
@@ -410,23 +415,28 @@ function relinkModal(){
   $('rlBtn').style.display='inline-block';
   $('rlCodeWrap').style.display='none';
   $('rlStatus').textContent='';
-  $('rlNumber').textContent=configOwner||'';
+  $('rlError').textContent='';
+  // Prefill the phone from the last known number
+  fetch('/api/state').then(r=>r.json()).then(s=>{
+    const ph=s.number||s.ownerPhone||'';
+    if(ph)$('rlPhone').value=ph;
+  });
   $('relinkOvl').classList.add('show');
 }
-let configOwner='';
-fetch('/api/state').then(r=>r.json()).then(s=>{configOwner=s.ownerPhone;if(s.ownerPhone)$('rlNumber').textContent=s.ownerPhone;});
-$('relinkBtn').onclick=()=>{
+$('rlBtn').onclick=()=>{
+  const phone=($('rlPhone').value||'').replace(/[^0-9]/g,'');
+  if(!phone){$('rlError').textContent='Enter your WhatsApp phone number first (digits only, e.g. 254712345678).';return;}
   if(!confirm('Reset the WhatsApp session and generate a new pairing code?'))return;
-  $('relinkOvl').classList.add('show');
   $('rlBtn').style.display='none';
-  $('rlStatus').textContent='Resetting session… (one moment)';
   $('rlCodeWrap').style.display='none';
-  j('/api/relink',{method:'POST'}).then(d=>{
-    if(d.code){$('rlCode').textContent=d.code;$('rlCodeWrap').style.display='block';$('rlStatus').textContent='Open WhatsApp → Linked devices → Link with phone number.';}
-    else if(d.error){$('rlStatus').textContent='Error: '+d.error;}
-    else $('rlStatus').textContent='No code yet — watch the console logs for the QR.';
+  $('rlError').textContent='';
+  $('rlStatus').textContent='Resetting session… (one moment)';
+  j('/api/relink',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone})}).then(d=>{
+    if(d.code){$('rlCode').textContent=d.code;$('rlCodeWrap').style.display='block';$('rlStatus').textContent='Open WhatsApp → Settings → Linked devices → "Link with phone number", then type this code on your phone.';}
+    else if(d.error){$('rlError').textContent='Error: '+d.error;$('rlStatus').textContent='';}
+    else{$('rlStatus').textContent='Pairing started — check your phone for the code.';}
     refreshState();
-  }).catch(e=>{$('rlStatus').textContent='Error: '+e.message;});
+  }).catch(e=>{$('rlError').textContent='Error: '+e.message;$('rlStatus').textContent='';});
 };
 setInterval(()=>{refreshState();const d=new Date();$('clock').textContent=d.toLocaleTimeString();},4000);
 refreshState();
@@ -534,10 +544,19 @@ function logHtml(x){
 }
 function relink(){
   const b=document.getElementById('connBanner');
-  if(b){b.style.display='block';b.innerHTML='<b>Re-linking…</b> watch for a fresh QR / pairing code below.';}
+  if(b){b.style.display='block';b.innerHTML='<b>Re-linking…</b> generating a fresh pairing code.';}
   const btn=document.getElementById('relinkBtn'); if(btn)btn.textContent='Re-linking…';
-  fetch('/api/relink',{method:'POST'}).then(r=>r.json()).catch(()=>{})
-    .then(()=>{setTimeout(renderState,4000);setTimeout(renderState,9000);setTimeout(renderFeedback,8000);})
+  // Pull the phone from last connection or any stored value
+  fetch('/api/state').then(r=>r.json()).then(s=>{
+    const phone=s.number||s.ownerPhone||'';
+    return fetch('/api/relink',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone})});
+  }).then(r=>r.json()).catch(()=>{})
+    .then(()=>{
+      renderState();
+      setTimeout(renderState,3000);
+      setTimeout(renderState,8000);
+      setTimeout(()=>{if(btn)btn.textContent='↻ Re-link WhatsApp';},5000);
+    })
     .catch(()=>{renderState();});
 }
 function renderFeedback(){const btn=document.getElementById('relinkBtn'); if(btn)btn.textContent='↻ Re-link WhatsApp';}
@@ -1120,7 +1139,9 @@ async function handler(req, res) {
     }
 
     if (m === 'POST' && p === '/api/relink') {
-      const r = await bot.relink();
+      const parsed = parseJsonBody(await readBody(req)).catch(() => ({ ok: true, value: {} }));
+      const phone = String((parsed.value || {}).phone || '').trim();
+      const r = await bot.relink(phone);
       json(res, 200, r);
       return;
     }
