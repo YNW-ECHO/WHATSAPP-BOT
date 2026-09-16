@@ -164,8 +164,8 @@ async function startBot() {
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       session.setState({ connection: 'closed', connected: false });
-      if (code === DisconnectReason.loggedOut) {
-        logger.error('Logged out of WhatsApp. Use the dashboard "Re-link" button to reconnect.');
+      if (code === DisconnectReason.loggedOut || code === 405) {
+        logger.error(`Session rejected (code ${code}). Use the dashboard "Re-link" button to reconnect.`);
         session.setState({ pairingCode: '', qr: '' });
         return;
       }
@@ -206,12 +206,15 @@ async function startBot() {
 async function scheduleRestart(code) {
   if (restarting) return;
   restarting = true;
-  // Timeouts (408) usually mean no WhatsApp connectivity: back off so we
-  // don't hammer the server every 3 s when offline. Reconnects happen
-  // manually via the dashboard Re-link button anyway.
   const delay = code === 408 ? 15000 : 3000;
   logger.info(`Restarting in ${delay / 1000}s…`);
   await sleep(delay);
+  const old = currentSock;
+  if (old) {
+    try { old.end(); } catch (e) {}
+    currentSock = null;
+    session.setSocket(null);
+  }
   try {
     await startBot();
   } catch (e) {
