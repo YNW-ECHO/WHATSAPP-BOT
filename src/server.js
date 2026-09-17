@@ -410,12 +410,19 @@ window.addEventListener('DOMContentLoaded',()=>{
   const msg=$('msg'); if(msg)msg.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')doSend();});
 });
 // re-link
+// The modal markup is injected AFTER this script, so bind handlers lazily
+// inside relinkModal()/startRelink() once the elements actually exist.
+$('relinkBtn').onclick=()=>{relinkModal();};
 function relinkModal(){
   $('relinkBody').style.display='block';
   $('rlBtn').style.display='inline-block';
   $('rlCodeWrap').style.display='none';
   $('rlStatus').textContent='';
   $('rlError').textContent='';
+  if($('rlBtn').getAttribute('data-bound')!=='1'){
+    $('rlBtn').setAttribute('data-bound','1');
+    $('rlBtn').onclick=startRelink;
+  }
   // Prefill the phone from the last known number
   fetch('/api/state').then(r=>r.json()).then(s=>{
     const ph=s.number||s.ownerPhone||'';
@@ -423,7 +430,7 @@ function relinkModal(){
   });
   $('relinkOvl').classList.add('show');
 }
-$('rlBtn').onclick=()=>{
+function startRelink(){
   const phone=($('rlPhone').value||'').replace(/[^0-9]/g,'');
   if(!phone){$('rlError').textContent='Enter your WhatsApp phone number first (digits only, e.g. 254712345678).';return;}
   if(!confirm('Reset the WhatsApp session and generate a new pairing code?'))return;
@@ -437,7 +444,7 @@ $('rlBtn').onclick=()=>{
     else{$('rlStatus').textContent='Pairing started — check your phone for the code.';}
     refreshState();
   }).catch(e=>{$('rlError').textContent='Error: '+e.message;$('rlStatus').textContent='';});
-};
+}
 setInterval(()=>{refreshState();const d=new Date();$('clock').textContent=d.toLocaleTimeString();},4000);
 refreshState();
 </script>
@@ -470,10 +477,7 @@ document.getElementById('f').onsubmit=async e=>{e.preventDefault();
 }
 
 function overviewPage() {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Overview — ${esc(config.name)}</title><style>${CSS}</style></head><body>
-${layout('overview', `
-<div class="banner" id="connBanner" style="display:none"></div>
+  return `<div class="banner" id="connBanner" style="display:none"></div>
 <div class="grid" id="cards"></div>
 <div class="cols">
 <div class="card">
@@ -488,7 +492,7 @@ ${layout('overview', `
   <div class="conn-box" id="connInfo"><div class="mut">Loading…</div></div>
   <div class="lab" style="margin-top:16px">Quick actions</div>
   <button class="primary" style="width:100%" onclick="openSend()">✉ Send a message</button>
-  <button class="ghost" style="width:100%;margin-top:8px" onclick="relink()" id="relinkBtn">↻ Re-link WhatsApp</button>
+  <button class="ghost" style="width:100%;margin-top:8px" onclick="relinkModal()" id="relinkBtnOvr">↻ Re-link WhatsApp</button>
   <button class="ghost" style="width:100%;margin-top:8px" onclick="location.href='/logs'">Open full logs</button>
 </div>
 </div>
@@ -542,27 +546,9 @@ function logHtml(x){
   const body= x.source==='voice' ? (x.direction==='in'?'🎙 ':'🎧 ')+esc(x.transcript) : esc(x.detail);
   return '<div class="line"><span class="t">'+fmt(x.ts)+'</span><span class="k '+(L[x.kind]||'dim')+'">'+(x.kind||'log')+'</span><span class="rest"><b class="who">'+nm+'</b><span class="msg">'+body+'</span></span></div>';
 }
-function relink(){
-  const b=document.getElementById('connBanner');
-  if(b){b.style.display='block';b.innerHTML='<b>Re-linking…</b> generating a fresh pairing code.';}
-  const btn=document.getElementById('relinkBtn'); if(btn)btn.textContent='Re-linking…';
-  // Pull the phone from last connection or any stored value
-  fetch('/api/state').then(r=>r.json()).then(s=>{
-    const phone=s.number||s.ownerPhone||'';
-    return fetch('/api/relink',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone})});
-  }).then(r=>r.json()).catch(()=>{})
-    .then(()=>{
-      renderState();
-      setTimeout(renderState,3000);
-      setTimeout(renderState,8000);
-      setTimeout(()=>{if(btn)btn.textContent='↻ Re-link WhatsApp';},5000);
-    })
-    .catch(()=>{renderState();});
-}
-function renderFeedback(){const btn=document.getElementById('relinkBtn'); if(btn)btn.textContent='↻ Re-link WhatsApp';}
 renderState();renderLogs();
 setInterval(()=>{renderState();renderLogs();},5000);
-</script>`)}</body></html>`;
+</script>`;
 }
 
 function chatsPage() {
@@ -723,7 +709,7 @@ function settingsPage() {
   <textarea id="sp" rows="5" style="width:100%;margin-top:8px"></textarea>
   <div class="row"><button class="primary" onclick="saveSP()">Save system prompt</button></div>
 </div>
-<div class="err" id="err"></div>
+<div class="err" id="sErr"></div>
 <script>
 function cfg(){return fetch('/api/config').then(r=>r.json());}
 function draw(){
@@ -1139,8 +1125,10 @@ async function handler(req, res) {
     }
 
     if (m === 'POST' && p === '/api/relink') {
-      const parsed = parseJsonBody(await readBody(req)).catch(() => ({ ok: true, value: {} }));
-      const phone = String((parsed.value || {}).phone || '').trim();
+      let phone = '';
+      try {
+        phone = String((JSON.parse(await readBody(req)) || {}).phone || '').trim();
+      } catch (e) { /* no body or invalid JSON — relink without a phone */ }
       const r = await bot.relink(phone);
       json(res, 200, r);
       return;

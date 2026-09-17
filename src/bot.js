@@ -6,6 +6,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
   DisconnectReason,
   Browsers,
   jidNormalizedUser,
@@ -42,6 +43,23 @@ function findAuthDir() {
 let currentSock = null;
 let restarting = false;
 let pairingRequested = false;
+
+// Last-known-good WhatsApp Web version, used only when the live check fails.
+const FALLBACK_WA_VERSION = [2, 3000, 1033893291];
+let resolvedWAVersion = null;
+
+async function resolveWAVersion() {
+  if (resolvedWAVersion) return resolvedWAVersion;
+  try {
+    const { version } = await fetchLatestBaileysVersion({ timeout: 10000 });
+    resolvedWAVersion = version;
+    logger.info(`Using WhatsApp Web version ${version.join('.')}`);
+  } catch (e) {
+    logger.warn('Failed to fetch latest WhatsApp version, using fallback:', e.message);
+    resolvedWAVersion = FALLBACK_WA_VERSION;
+  }
+  return resolvedWAVersion;
+}
 
 // Compact QR for the Render log viewer.
 function printQR(qr) {
@@ -119,10 +137,11 @@ async function startBot() {
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, baileysLogger) },
     printQRInTerminal: false,
     // WhatsApp rejects connections that report an outdated Web version with
-    // status 405 ("Connection Failure"). Pin the current version the way
-    // Baileys' own docs recommend so the registration/pairing handshake
-    // passes. Bump this if WhatsApp rolls the version forward and 405s return.
-    version: [2, 3000, 1033893291],
+    // status 405 ("Connection Failure"). Fetch the current version at startup
+    // (as Baileys' docs recommend) so the registration/pairing handshake
+    // passes, instead of pinning a hardcoded number that WhatsApp later rolls
+    // past. Falls back to the last-known-good version if the check fails.
+    version: await resolveWAVersion(),
     browser: Browsers.macOS('Chrome'),
     logger: baileysLogger,
     markOnlineOnConnect: false,
