@@ -103,13 +103,28 @@ async function tryPairingCode(sock, phone) {
   }
 }
 
+// Baileys reports your LID as either a full jid ("1207...@lid") or a bare
+// number straight from the CB:success node. jidNormalizedUser() returns '' for
+// a bare number, so normalize it to a proper "@lid" jid first.
+function normalizeLid(lid) {
+  if (!lid) return '';
+  const s = String(lid).trim();
+  if (!s) return '';
+  return jidNormalizedUser(s.includes('@') ? s : s + '@lid');
+}
+
 function recordConnection() {
   const user = currentSock?.user;
   const jid = user?.id ? jidNormalizedUser(user.id) : '';
   const number = jid.split('@')[0] || jid;
+  // WhatsApp addresses your own "Message yourself" thread by your LID (@lid)
+  // rather than your phone jid, so keep it around for self-chat detection.
+  const lid = user?.lid ? normalizeLid(user.lid) : '';
+  if (lid) session.setState({ lid });
   const device = deviceName(user?.device) + ' · macOS Chrome';
   session.setDeviceInfo({
     number,
+    lid,
     device,
     connected: true,
     connection: 'open',
@@ -213,6 +228,11 @@ async function startBot() {
   if (!config.ownerJid && sock.user?.id) {
     try {
       config.ownerJid = jidNormalizedUser(sock.user.id);
+    } catch (e) {}
+  }
+  if (!session.getState().lid && sock.user?.lid) {
+    try {
+      session.setState({ lid: normalizeLid(sock.user.lid) });
     } catch (e) {}
   }
 

@@ -7,6 +7,8 @@ const UA = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
   'Accept': '*/*',
 };
+// Non-browser UA for wttr.in so it returns plain text instead of a full HTML page.
+const WEATHER_UA = { 'User-Agent': 'curl/8.5.0', 'Accept': 'text/plain' };
 const MAX_MEDIA = 10 * 1024 * 1024; // 10 MB cap keeps WhatsApp happy
 
 /* ============================ time ============================ */
@@ -31,23 +33,37 @@ function timeText() {
 async function weather(city) {
   const q = String(city || '').trim() || 'Nairobi';
   try {
-    const res = await fetch(`https://wttr.in/${encodeURIComponent(q)}?format=%C+%c+%t+%w+%h`, {
-      headers: UA, signal: AbortSignal.timeout(12000), redirect: 'follow',
-    });
+    const res = await fetch(
+      `https://wttr.in/${encodeURIComponent(q)}?format=%C+%c+%t+%w+%h&lang=en`,
+      { headers: WEATHER_UA, signal: AbortSignal.timeout(12000), redirect: 'follow' }
+    );
     if (!res.ok) return `🌦️ No weather for "${q}" right now.`;
-    const txt = (await res.text()).trim().replace(/\s+/g, ' ');
-    if (!txt) return `🌦️ No weather for "${q}" right now.`;
-    // wttr gives: "Partly cloudy ☀️ +24°C 15km/h 45%"
-    const parts = txt.split(/[\s+]+/);
-    const temp = parts.find((p) => p.includes('°')) || '';
-    const wind = parts.find((p) => p.toLowerCase().includes('km/h')) || '';
-    const hum = parts.find((p) => p.includes('%')) || '';
-    const desc = parts.filter((p) => p !== temp && !p.toLowerCase().includes('km/h') && !p.includes('%')).join(' ');
+    // wttr.in returns one plain line for non-browser clients, e.g.
+    // "Cloudy ☁️ +18°C ←10km/h 63%". If it ever comes back as an HTML page
+    // (wrong UA / gateway), pull out the text from inside the page instead of
+    // dumping markup at the owner.
+    let raw = (await res.text()).trim();
+    if (raw.startsWith('<') || /<\/?[a-z][^>]*>/i.test(raw)) {
+      const m = raw.match(/>([^<>]*?)<\//g);
+      const inner = m ? m.map((s) => s.replace(/^>[^>]*</, '')).join(' ') : '';
+      raw = inner.replace(/&amp;/gi, '&').replace(/&#47;/gi, '/') || 'No weather';
+    }
+    raw = raw.replace(/<[^>]+>/g, '').split('\n').find((l) => l.trim()).trim();
+    const toks = raw.split(/\s+/).filter(Boolean);
+    const temp = toks.find((t) => /\d+\s?°/.test(t)) || '';
+    const wind = toks.find((t) => /km\/?h/i.test(t)) || '';
+    const hum = toks.find((t) => /%$/.test(t)) || '';
+    // Condition text = the tokens that aren't the temp/wind/hum data.
+    const desc = toks
+      .filter((t) => t !== temp && !/km\/?h/i.test(t) && !/%$/.test(t) && !/^\d/.test(t))
+      .join(' ');
+    if (!temp && !desc) return `🌦️ No weather for "${q}" right now.`;
     return [
-      `🌦️ *Weather · ${q === 'Nairobi' ? 'Nairobi' : q}*`,
-      `• ${desc.replace(/^\+/, '')}`,
-      temp ? `• 🌡️ ${temp}` : '',
-      wind ? `• 💨 ${wind}` : '',
+      `🌦️ *Weather · ${q.toLowerCase() === 'nairobi' ? 'Nairobi' : q}*`,
+      desc ? `• ${desc.replace(/^\+/, '')}` : '',
+      temp ? `• 🌡️ ${temp.replace(/^\+/, '')}` : '',
+      // Wind often arrives with a direction arrow ("←10km/h") — keep only the speed.
+      wind ? `• 💨 ${wind.replace(/[^0-9]/g, '')} km/h` : '',
       hum ? `• 💧 ${hum}` : '',
     ].filter(Boolean).join('\n');
   } catch (e) {

@@ -10,6 +10,7 @@ const state = {
   connected: false,
   contacts: 0,
   number: '',
+  lid: '',
   device: '',
   pairingCode: '',
   qr: '',

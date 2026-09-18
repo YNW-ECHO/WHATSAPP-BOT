@@ -46,7 +46,7 @@ function menuText(owner = false) {
     '',
     '──── 🎶 *PLAY A SONG* ────',
     '• 🎧 type:  "play <song> by <artist>"',
-    '• ▶️ then reply:  *mp3* (voice note)  or  *mp4* (video)',
+    '• ➡️ tap *Choose format* → mp3 audio · voice note · mp4 video',
     '',
     '──── 🔧 *CHAT CONTROLS* ────',
     '• 📜 !menu · !help — this menu',

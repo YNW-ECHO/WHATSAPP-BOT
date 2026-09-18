@@ -557,6 +557,13 @@ function chatsPage() {
 <button onclick="load()">Filter</button>
 <button class="primary" onclick="openSend()">✉ Send</button>
 </div>
+<div class="row">
+<input id="cName" placeholder="Name (e.g. Mama)" style="width:170px">
+<input id="cPhone" placeholder="Phone (e.g. 254712345678)" style="width:210px">
+<button class="ghost" onclick="addContact()">＋ Link contact</button>
+<span class="sm" id="cErr" style="flex:1"></span>
+</div>
+<p class="sm">WhatsApp contacts sync automatically. This pre-adds a contact (name + number) so the bot knows them, remembers them, and auto-replies the moment they text you.</p>
 <table><thead><tr><th>Contact</th><th>JID</th><th>Auto</th><th>Muted</th><th>Mode</th><th>Last message</th><th>Today</th><th></th></tr></thead>
 <tbody id="rows"></tbody></table></div>
 <script>
@@ -578,6 +585,19 @@ function load(){
 }
 function auto(j,v){fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jid:j,auto_reply:v})}).then(load);}
 function mute(j,v){fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jid:j,muted:v})}).then(load);}
+async function addContact(){
+  const name=(document.getElementById('cName').value||'').trim();
+  const phone=(document.getElementById('cPhone').value||'').replace(/\D/g,'');
+  const e=document.getElementById('cErr'); if(e)e.textContent='';
+  if(!name||!phone){if(e)e.textContent='Add both a name and a phone number first.';return;}
+  const r=await fetch('/api/contacts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,phone})}).then(x=>x.json());
+  if(r.ok){
+    if(e)e.innerHTML='✓ <b>'+esc(r.name)+'</b> linked — <span class="mut">'+esc(r.jid)+'</span>';
+    document.getElementById('cName').value='';document.getElementById('cPhone').value='';
+    if(contactsAll)contactsAll=[...contactsAll,{jid:r.jid,name:r.name}];
+    load();
+  } else if(e)e.textContent=r.error||'Failed to link contact.';
+}
 load();
 setInterval(load,15000);
 </script>`;
@@ -1212,6 +1232,23 @@ async function handler(req, res) {
       return;
     }
     if (m === 'GET' && p === '/api/contacts') { json(res, 200, { contacts: store.getContacts() }); return; }
+    if (m === 'POST' && p === '/api/contacts') {
+      const parsed = parseJsonBody(await readBody(req));
+      if (!parsed.ok) { json(res, 400, { ok: false, error: parsed.error }); return; }
+      const name = String(parsed.value.name || '').trim().slice(0, 80);
+      const phone = String(parsed.value.phone || '').replace(/\D/g, '');
+      if (!name) { json(res, 400, { ok: false, error: 'Name is required.' }); return; }
+      if (!/^\d{9,15}$/.test(phone)) {
+        json(res, 400, { ok: false, error: 'Enter a valid phone number, digits only (e.g. 254712345678).' });
+        return;
+      }
+      const intl = phone.startsWith('0') ? '254' + phone.slice(1) : phone;
+      const jid = intl + '@s.whatsapp.net';
+      store.saveContact(jid, name);
+      store.getChat(jid); // ensure an auto-reply row exists for this contact
+      json(res, 200, { ok: true, jid, name });
+      return;
+    }
 
     if (m === 'GET' && p === '/api/train') { json(res, 200, { samples: store.getStyleSamples(100) }); return; }
     if (m === 'POST' && p === '/api/train') {
